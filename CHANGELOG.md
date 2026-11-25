@@ -2,6 +2,7 @@
 
 * Associate a fatal input ANR dumped just after the final sample when the last open probe and primary system stack share matching frames. Both the sample-to-dump and dump-to-exit gaps must be within 2.5 seconds.
 * Record the foreground ANR kill and process death in the Android fixture runner for devices that terminate the example during the workload.
+* Read both kernel names for the per-thread wakeup count in the example's idle benchmark.
 
 ## 0.1.0-dev.4
 

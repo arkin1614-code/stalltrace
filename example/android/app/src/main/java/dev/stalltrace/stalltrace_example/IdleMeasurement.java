@@ -41,8 +41,11 @@ final class IdleMeasurement {
                 if (name == null)
                     return Long.parseLong(line.trim().split("\\s+")[0]);
                 String[] parts = line.split(":", 2);
-                if (parts.length == 2 && name.equals(parts[0].trim()))
-                    return Long.parseLong(parts[1].trim());
+                if (parts.length == 2) {
+                    String key = parts[0].trim();
+                    if (key.equals(name) || key.equals("se.statistics." + name))
+                        return Long.parseLong(parts[1].trim());
+                }
             }
         }
         return -1;

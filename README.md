@@ -61,6 +61,8 @@ python3 tool/symbolize.py "$REPORT_FILE" --llvm "$LLVM_BIN" \
 
 The input may be a JSONL snapshot file or an Android ANR trace. `DART_SYMBOLS` points to the release's `app.android-arm64.symbols`. Also supply `--elf "libc.so=$DEVICE_LIBC"` for supported frameless libc calls. The decoder checks ELF Build IDs and expands available inline frames. Missing symbols and interrupted frame-pointer chains limit stack coverage.
 
+A library can be mapped while a sample is being taken. If the executable mapping cannot be verified both before and after capture, the raw record retains the address and the decoded frame is unknown. Other verified frames in that sample remain usable.
+
 ## Android support
 
 | Capability | Development version |
