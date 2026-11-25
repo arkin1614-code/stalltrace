@@ -76,4 +76,6 @@ A library can be mapped while a sample is being taken. If the executable mapping
 
 This version targets foreground input stalls. Split engine threads, background ANR types, other isolates and asynchronous Dart call chains need separate coverage.
 
-[Run the release example and verify its stacks](example/README.md) · [Release plan for review (中文)](doc/RELEASE_PLAN.zh-CN.md) · [License](LICENSE)
+The same obfuscated ARM64 release APK (dev.5) associated all 50 input ANRs with a frame-matched live sample in five test rounds each on a Samsung SM-F9660 (Android 17) and a OnePlus PGP110 (Android 15). Ten short stalls produced zero ANR associations. [Physical-device results and release plan (中文)](doc/RELEASE_PLAN.zh-CN.md)
+
+[Run the release example and verify its stacks](example/README.md) · [License](LICENSE)
