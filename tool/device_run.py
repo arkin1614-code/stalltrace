@@ -128,6 +128,12 @@ def main():
             except RuntimeError:
                 if attempt == 2 or adb("shell", "pidof", PKG) != str(pid): raise
 
+    def require_fixture_focus():
+        windows = adb("shell", "dumpsys", "window")
+        if not any("mCurrentFocus=Window{" in line and PKG + "/" in line and
+                   "Application Not Responding:" not in line for line in windows.splitlines()):
+            raise RuntimeError("example lost input focus; no test input sent")
+
     def now():
         return float(adb("shell", "date", "+%s.%N"))
 
@@ -171,6 +177,7 @@ def main():
             time.sleep(args.ffi_input_delay)
         if name == "Switch late":
             wait_mark(pid, "switch to native", since, 35)
+        require_fixture_focus()
         injected = now()
         if int(device["api"]) < 30:
             # Older "input" waits for delivery. Queue another focused event
@@ -178,6 +185,7 @@ def main():
             with subprocess.Popen([args.adb, "-s", args.serial, "shell", "input",
                                    "tap", "100", "240"]) as pending_touch:
                 time.sleep(0.8)
+                require_fixture_focus()
                 adb("shell", "input", "keyevent", "KEYCODE_Q")
                 pending_touch.wait(timeout=25)
         else:

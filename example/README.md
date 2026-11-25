@@ -35,6 +35,8 @@ On devices with a 10-second input dispatch timeout, build with `--dart-define=ST
 
 For the idle comparison, add `--measure-idle` to the last run. Keep the example foregrounded and connected to USB. The example keeps its window awake and measures the same process for 10 minutes with sampling paused, followed by 10 minutes with sampling enabled. Each leg has a five-second settling period. The two local JSON files include process CPU time, main-thread CPU time, kernel scheduler wakeups of the main and watchdog threads when available, and the peak observed logical report-file bytes. An activity pause or a gap between uptime and elapsed time invalidates the leg. The baseline includes an initialized, paused collector. Boot costs, device suspend wakeups and battery discharge require separate measurements.
 
+To check foreground and rotation handling on the release APK, note the example PID. Tap **Pause sampling**, run **Short stall**, and wait for it to finish. Rotate to landscape, return to the Home screen, reopen the example, and rotate back to portrait. Tap **Resume sampling**, run **Short stall** again, and **Export**. Use the example’s `AnrLab` begin/end timestamps and PID to count `stall_sample` records within each window. Expect zero during the first stall and at least one during the second, with the same PID throughout. Restore the handset’s original rotation setting after the check.
+
 To exercise a conflicting signal owner, repeated start/stop and deletion through the public Dart API, run on a dedicated ARM64 device:
 
 ```sh
