@@ -1,5 +1,5 @@
 group = "dev.stalltrace"
-version = "0.1.0-dev.1"
+version = "0.1.0-dev.2"
 
 plugins { id("com.android.library") }
 
@@ -24,4 +24,6 @@ android {
 
 dependencies {
     implementation("androidx.lifecycle:lifecycle-common:2.7.0")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

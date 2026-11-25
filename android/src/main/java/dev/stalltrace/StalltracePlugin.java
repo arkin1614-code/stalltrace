@@ -10,6 +10,8 @@ import io.flutter.embedding.engine.plugins.activity.ActivityAware;
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
+import java.io.File;
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -50,6 +52,20 @@ public final class StalltracePlugin implements FlutterPlugin, ActivityAware, Met
             optedIn = false;
             updateDemand();
             result.success(null);
+        } else if (call.method.equals("listReports") || call.method.equals("deleteReport")) {
+            File dir = AnrMonitor.directory(context);
+            ReportStore.IO.execute(() -> {
+                try {
+                    if (call.method.equals("listReports")) result.success(ReportStore.list(dir));
+                    else result.success(ReportStore.delete(dir, call.arguments instanceof String ? (String)call.arguments : null));
+                } catch (IllegalArgumentException invalid) {
+                    result.error("invalid_report_id", invalid.getMessage(), null);
+                } catch (ReportStore.ActiveReport active) {
+                    result.error("report_active", active.getMessage(), null);
+                } catch (IOException failure) {
+                    result.error("report_io", failure.getMessage(), null);
+                }
+            });
         } else result.notImplemented();
     }
 

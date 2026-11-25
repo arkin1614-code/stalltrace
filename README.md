@@ -26,6 +26,21 @@ Call this from the root isolate of your Android app after opting in to diagnosti
 
 The plugin writes to the app's private no-backup directory. A `.jsonl` contains timestamped stall snapshots and Java frames. An `exit-*.json` describes a historical process exit and may refer to a separate `.trace`. History collection runs asynchronously after startup. A recovered ANR may have a trace attached to a later exit for a different reason. The host controls retention beyond the plugin's rolling limits and any export or upload. The example exports copies only when its Export button is used.
 
+## Manage local reports
+
+```dart
+final reports = await Stalltrace.listReports();
+for (final report in reports) {
+  if (report.confirmedAnrExit) {
+    // Android attributed this process exit to an ANR.
+  }
+}
+// When the host or its user chooses to remove a specific report:
+// await Stalltrace.deleteReport(report.id);
+```
+
+Listing returns opaque IDs, the evidence kind, active state and relative file names. A stall includes its rotated segments; an exit record includes its available trace. Deletion is idempotent and can return `report_active` during capture. [Data and deletion semantics](doc/PRIVACY.md)
+
 ## Read a stack
 
 Build the host with split debug information and retain the exact ELF symbols for each release and ABI. Supply the unstripped ELF for each native module you want to decode. Run the following from the Stalltrace checkout with Python 3 and the LLVM tools from the Android NDK.

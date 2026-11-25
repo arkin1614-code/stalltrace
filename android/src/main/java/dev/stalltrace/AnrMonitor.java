@@ -16,6 +16,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.UUID;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** One monitor per process. Install on the main thread; enable across foreground resumes. */
@@ -44,8 +47,12 @@ final class AnrMonitor {
         monitor.setDaemon(true);
         monitor.start();
         Context app = context.getApplicationContext();
-        if (Build.VERSION.SDK_INT >= 30)
-            new Thread(() -> ExitHistory.collect(app, dir), "anr-exit-history").start();
+        ReportStore.IO.execute(() -> {
+            try {
+                ReportStore.recover(dir, null);
+                if (Build.VERSION.SDK_INT >= 30) ExitHistory.collect(app, dir);
+            } catch (IOException failure) { Log.e("Stalltrace", "recover reports", failure); }
+        });
         return nativeReady;
     }
 
@@ -87,6 +94,7 @@ final class AnrMonitor {
                     file = new File(dir, session + "-" + id + "-tail" + ((count / 16) % 2) + ".jsonl");
                     if (file.exists() && !file.delete()) break;
                 }
+                if (count == 0) ReportStore.activeStall = session + "-" + id;
                 count++;
                 try {
                     long before = System.nanoTime();
@@ -117,14 +125,16 @@ final class AnrMonitor {
                 try {
                     append(file, new JSONObject().put("type", ack.get() == id ? "ack" : "lifecycle_end")
                         .put("wallMs", System.currentTimeMillis()).put("uptimeMs", SystemClock.uptimeMillis()));
-                    trim(dir, ".jsonl", 24);
+                    ReportStore.IO.execute(() -> trim(dir, ".jsonl", 24));
                 } catch (Exception e) { Log.e("Stalltrace", "end write", e); }
+                finally { ReportStore.activeStall = null; }
             }
             SystemClock.sleep(250);
         }
     }
 
-    private static void append(File file, JSONObject row) throws IOException {
+    private static void append(File file, JSONObject row) throws IOException, org.json.JSONException {
+        row.put("schemaVersion", 1);
         try (FileOutputStream out = new FileOutputStream(file, true)) {
             out.write((row + "\n").getBytes(StandardCharsets.UTF_8));
             out.getFD().sync();
@@ -142,9 +152,14 @@ final class AnrMonitor {
         static void collect(Context app, File dir) {
             try {
                 ActivityManager am = (ActivityManager)app.getSystemService(Context.ACTIVITY_SERVICE);
-                for (ApplicationExitInfo x : am.getHistoricalProcessExitReasons(null, 0, 12)) {
+                List<ApplicationExitInfo> history = am.getHistoricalProcessExitReasons(null, 0, 12);
+                Set<String> recent = new HashSet<>();
+                for (ApplicationExitInfo x : history) recent.add("exit-" + x.getTimestamp() + "-" + x.getPid());
+                ReportStore.recover(dir, recent);
+                for (ApplicationExitInfo x : history) {
                     if (!android.app.Application.getProcessName().equals(x.getProcessName())) continue;
                     String key = "exit-" + x.getTimestamp() + "-" + x.getPid();
+                    if (ReportStore.marker(dir, key).exists()) continue;
                     File meta = new File(dir, key + ".json"), trace = new File(dir, key + ".trace");
                     boolean truncated = false;
                     // Other exit reasons can retain an earlier recovered ANR trace.
@@ -169,7 +184,7 @@ final class AnrMonitor {
                         } catch (IOException e) { Log.w("Stalltrace", "trace unavailable", e); }
                     }
                     // A size at the cap can be ambiguous after interrupted metadata writes.
-                    JSONObject info = new JSONObject().put("pid", x.getPid()).put("process", x.getProcessName())
+                    JSONObject info = new JSONObject().put("schemaVersion", 1).put("pid", x.getPid()).put("process", x.getProcessName())
                         .put("exitWallMs", x.getTimestamp()).put("reason", x.getReason())
                         .put("reasonAnr", x.getReason() == ApplicationExitInfo.REASON_ANR)
                         .put("traceFile", trace.exists() ? trace.getName() : JSONObject.NULL)

@@ -34,4 +34,32 @@ void main() {
     messenger.setMockMethodCallHandler(channel, (call) async => {});
     await expectLater(Stalltrace.start(), throwsFormatException);
   });
+  test(
+    'lists grouped evidence and deletes by opaque ID without starting',
+    () async {
+      final methods = <String>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        methods.add(call.method);
+        if (call.method == 'listReports') {
+          return [
+            {
+              'id': 'id',
+              'kind': 'processExit',
+              'confirmedAnrExit': false,
+              'active': false,
+              'files': ['exit.json', 'exit.trace'],
+            },
+          ];
+        }
+        expect(call.arguments, 'id');
+        return true;
+      });
+      final report = (await Stalltrace.listReports()).single;
+      expect(report.kind, StalltraceReportKind.processExit);
+      expect(report.confirmedAnrExit, isFalse);
+      expect(report.files, ['exit.json', 'exit.trace']);
+      expect(await Stalltrace.deleteReport(report.id), isTrue);
+      expect(methods, ['listReports', 'deleteReport']);
+    },
+  );
 }
