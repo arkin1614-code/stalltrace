@@ -1,3 +1,8 @@
+## 0.1.0-dev.5
+
+* Associate a fatal input ANR dumped just after the final sample when the last open probe and primary system stack share matching frames. Both the sample-to-dump and dump-to-exit gaps must be within 2.5 seconds.
+* Record the foreground ANR kill and process death in the Android fixture runner for devices that terminate the example during the workload.
+
 ## 0.1.0-dev.4
 
 * Check the two neighboring samples against the primary Android dump when selecting a live stack. Expose frame-supported and time-only selection through the Dart API.

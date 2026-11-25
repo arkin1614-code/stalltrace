@@ -59,6 +59,20 @@ def system_stack(raw, case, symbols, begin, end):
     return None
 
 
+def foreground_anr_death(case):
+    """Verify the ordered system event, foreground kill reason and process death."""
+    identity = r"\[\d+," + str(case["pid"]) + "," + re.escape(PACKAGE) + ","
+    kill, death = case.get("anrKill", ""), case["end"]
+    reason = re.search(r"\bam_kill\s*:\s*" + identity +
+                       r"0,user request after error:(Input dispatching timed out .+),\d+\]$", kill)
+    if not reason or not re.search(r"\bam_proc_died\s*:\s*" + identity, death):
+        return False
+    begin, killed, died = (float(line.split()[0]) for line in (case["begin"], kill, death))
+    return any(re.search(r"\bam_anr\s*:\s*" + identity, event) and
+               reason[1] in event and begin <= float(event.split()[0]) <= killed <= died
+               for event in case["am_anr"])
+
+
 def verify_case(case, rows, symbols, raw, api):
     name, pid = case["name"], case["pid"]
     begin, end = [float(case[key].split()[0]) for key in ("begin", "end")]
@@ -100,12 +114,16 @@ def verify_case(case, rows, symbols, raw, api):
         passed = bool(hits) and not case["am_anr"] and end - begin < 5
     else:
         passed = len(hits) >= 2 and delay is not None and delay <= 1500 and (system_hit if api >= 30 else system is None)
+    killed = foreground_anr_death(case)
+    death_recorded = "anrKill" in case or "am_proc_died" in case["end"]
+    if death_recorded:
+        passed = passed and killed and name != "Short stall"
     if name == "Native only":
         passed = passed and not any(f["module"] == "libapp.so"
                     for o in observed if o["qualified"] for f in o["stack"])
         if system:
             passed = passed and not any(f["module"] == "libapp.so" for f in system["stack"])
-    if switched is not None:
+    if name.startswith("Switch "):
         if "injectedWall" in case:
             expected_touch = False
             for event in case["am_anr"]:
@@ -113,8 +131,12 @@ def verify_case(case, rows, symbols, raw, api):
                 if wait and float(event.split()[0]) - case["injectedWall"] >= int(wait[1])/1000 - 0.5:
                     expected_touch = True
             passed = passed and expected_touch
-        passed = (passed and len(times) == 1 and phase(times[0]) == expected and
-                  all(any(phase(o["wall"]) == frames for o in hits) for frames in (DART, FFI)) and
+        # A killed process cannot execute the second phase after its death.
+        if switched is None:
+            phases_observed = name == "Switch early" and killed and bool(system_hit) and len(hits) == len(observed)
+        else:
+            phases_observed = all(any(phase(o["wall"]) == frames for o in hits) for frames in (DART, FFI))
+        passed = (passed and phases_observed and len(times) == 1 and phase(times[0]) == expected and
                   any(abs(o["wall"] - times[0]) <= 1.5 and phase(o["wall"]) == expected for o in hits))
     catalog_path = raw / "catalog.json"
     if catalog_path.exists():
@@ -127,11 +149,13 @@ def verify_case(case, rows, symbols, raw, api):
                       linked.get("exitReportId") == Path(system["traceFile"]).stem and
                       abs(linked["traceWallMs"]/1000 - system["dumpWall"]) < 0.002 and
                       abs((selected["wall"]-system["dumpWall"])*1000 - linked["sampleDeltaMs"]) < 3)
-            if switched is not None:
+            if name.startswith("Switch "):
                 passed = passed and phase(selected["wall"]) == phase(system["dumpWall"]) == expected
         else:
             passed = passed and linked.get("association") == "none"
     return {"case": name, "pid": pid, "dartTid": dart_tid, "passed": passed, "expected": expected,
+            "endSource": ("foregroundAnrDeath" if killed else "unverifiedDeath") if death_recorded else "fixtureReturn",
+            "switchObserved": switched is not None,
             "samples": len(observed), "hits": len(hits), "durationMs": round(1000*(end-begin)),
             "closestHitToSystemEventMs": round(delay) if delay is not None else None,
             "am_anr": case["am_anr"], "observations": observed, "systemTrace": system}

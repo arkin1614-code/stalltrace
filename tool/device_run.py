@@ -137,13 +137,29 @@ def main():
     def now():
         return float(adb("shell", "date", "+%s.%N"))
 
-    def events(pid, since, until):
+    def events(pid, since, until, tag="am_anr"):
         matches = []
-        for line in logs("events", "am_anr").splitlines():
+        for line in logs("events", tag).splitlines():
             if re.search(r"\[\d+," + str(pid) + "," + re.escape(PKG) + r",", line):
                 if since <= float(line.split()[0]) <= until:
                     matches.append(line)
         return matches
+
+    def case_end(pid, name, since):
+        deadline = time.monotonic() + 48
+        while time.monotonic() < deadline:
+            end = mark(pid, "end " + name, since)
+            if end:
+                return end, None
+            deaths = events(pid, since, float("inf"), "am_proc_died")
+            if deaths:
+                until = float(deaths[0].split()[0])
+                kills = events(pid, since, until, "am_kill")
+                if name != "Short stall" and kills and events(pid, since, until):
+                    return deaths[0], kills[-1]
+                raise RuntimeError("example died before completing " + name + " without an ANR kill record")
+            time.sleep(0.5)
+        raise RuntimeError("missing end marker or recorded ANR death: " + name)
 
     device = {
         key: adb("shell", "getprop", prop) for key, prop in (
@@ -190,16 +206,22 @@ def main():
                 pending_touch.wait(timeout=25)
         else:
             adb("shell", "input", "tap", "100", "240", timeout=55)
-        end = wait_mark(pid, "end " + name, since, 48)
+        end, kill = case_end(pid, name, since)
         until = float(end.split()[0])
         evidence = events(pid, since, until)
         case = {"name": name, "pid": pid, "begin": begin, "end": end, "am_anr": evidence, "injectedWall": injected}
+        if kill:
+            case["anrKill"] = kill
         if name.startswith("Switch "):
-            case["switched"] = wait_mark(pid, "switch to native", since, 3)
+            switch = mark(pid, "switch to native", since)
+            if switch:
+                case["switched"] = switch
+            elif name != "Switch early" or not kill:
+                raise RuntimeError("missing switch to native")
         cases.append(case)
         args.out.joinpath("cases.json").write_text(json.dumps(cases, indent=2) + "\n")
         print(name, pid, "system ANRs", len(evidence), flush=True)
-        if args.settle_anr_dialogs and evidence:
+        if args.settle_anr_dialogs and evidence and not kill:
             settle_dialog(pid)
     if args.check_interrupted:
         adb("shell", "am", "force-stop", PKG)

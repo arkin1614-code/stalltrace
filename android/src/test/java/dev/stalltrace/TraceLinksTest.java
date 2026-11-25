@@ -99,6 +99,41 @@ public class TraceLinksTest {
         assertEquals(721L, row(1).get("sampleDeltaMs"));
     }
     @Test
+    public void fatalDumpJustAfterLastSampleNeedsOpenProbeAndMatchingFrames() throws Exception {
+        stall(1, 7000, 8800);
+        File samples = new File(folder.getRoot(), PREFIX + "1.jsonl");
+        List<String> lines = Files.readAllLines(samples.toPath());
+        String open = lines.get(0).replace("pc libc.so aa 0", "pc libc.so aa 0\\ncall a bb 12\\ncall a bb 34") + "\n";
+        write(samples.getName(), open);
+        dump("app");
+        File trace = new File(folder.getRoot(), EXIT + ".trace");
+        String header = String.join("\n", Files.readAllLines(trace.toPath())).replace("00:00:04.100", "00:00:09.100");
+        String main = "\n\"main\" prio=5\n | sysTid=7\n native: #00 pc 00 a (BuildId: aa)\n"
+            + " native: #01 pc 12 a (BuildId: bb)\n native: #02 pc 34 a (BuildId: bb)\n\n";
+        write(trace.getName(), header + main);
+        assertEquals("none", row(1).get("traceAssociation")); // Recovered ANR in a different exit.
+        JSONObject exit = new JSONObject().put("process", "app").put("pid", 7)
+            .put("exitWallMs", T + 10000).put("reasonAnr", true);
+        write(EXIT + ".json", exit.toString());
+        assertEquals("matchingFrames", row(1).get("sampleSelection"));
+        assertEquals(-600L, row(1).get("sampleDeltaMs"));
+        write(EXIT + ".json", exit.put("exitWallMs", T + 11601).toString());
+        assertEquals("none", row(1).get("traceAssociation")); // Death too long after the dump.
+        write(EXIT + ".json", exit.put("exitWallMs", T + 14000).toString());
+        write(trace.getName(), header.replace("09.100", "12.000") + main);
+        assertEquals("none", row(1).get("traceAssociation")); // Latest sample too old.
+        write(EXIT + ".json", exit.put("exitWallMs", T + 10000).toString());
+        write(trace.getName(), header + main.replace("pc 34", "pc 35"));
+        assertEquals("none", row(1).get("traceAssociation"));
+        write(trace.getName(), header + main);
+        write(samples.getName(), open + lines.get(1) + "\n");
+        assertEquals("none", row(1).get("traceAssociation"));
+        write(samples.getName(), open);
+        stall(2, 8900, 11000);
+        assertEquals("none", row(1).get("traceAssociation")); // Another probe already started.
+        assertEquals("matched", row(2).get("traceAssociation"));
+    }
+    @Test
     public void overlapsStayAmbiguousAndProcessMismatchStaysUnlinked() throws Exception {
         stall(1, 0, 6000);
         stall(2, 3000, 6000);

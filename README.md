@@ -48,6 +48,8 @@ The association uses the primary input-timeout dump's PID, process name and mill
 
 For matched dumps, the collector compares the immediately preceding and following samples. Within 2.5 seconds of the dump, a sample with the same leaf module Build ID and two consecutive matching saved call sites takes precedence. The sample exposes `matchingFrames` when this evidence is available and `nearestTime` when only proximity supports selection. A time-only sample can fall on the other side of a workload transition. The split debug files still need to match the captured ELF Build IDs for offline symbolization.
 
+If Android terminates the process for an ANR, the dump can arrive after the last persisted sample. For the latest unfinished probe in that process, Stalltrace also checks whether the last sample matches the primary dump by frames. Both the sample-to-dump and dump-to-exit intervals must be within 2.5 seconds. A recovery marker, a newer probe, or missing frame evidence excludes that extension.
+
 ## Read a stack
 
 Build the host with split debug information and retain the exact ELF symbols for each release and ABI. Supply the unstripped ELF for each native module you want to decode. Run the following from the Stalltrace checkout with Python 3 and the LLVM tools from the Android NDK.

@@ -18,6 +18,7 @@ final class TraceLinks {
         String id, process;
         int pid;
         long wall;
+        boolean nearAnrExit;
         List<String> prefix = Collections.emptyList();
     }
 
@@ -94,7 +95,7 @@ final class TraceLinks {
         String process = "";
         int pid;
         long start = Long.MAX_VALUE, end = Long.MIN_VALUE, clockBase;
-        boolean invalid, ambiguous;
+        boolean invalid, ambiguous, ended;
         Stall(Map<String, Object> row) {
             this.row = row;
         }
@@ -110,6 +111,7 @@ final class TraceLinks {
                     }
                     String type = r.optString("type");
                     if (type.equals("ack") || type.equals("lifecycle_end")) {
+                        ended = true;
                         long wall = r.optLong("wallMs"), up = r.optLong("uptimeMs");
                         if (wall > 0 && up > 0) {
                             clock(wall - up);
@@ -132,8 +134,10 @@ final class TraceLinks {
                     process = name;
                     start = Math.min(start, begin);
                     clock(begin - up);
-                    if (!r.optBoolean("pendingAfterNative"))
+                    if (!r.optBoolean("pendingAfterNative")) {
+                        ended = true;
                         continue;
+                    }
                     long stamp = r.optLong("sampleWallMs"), endNs = r.optLong("sampleEndMonoNs");
                     clock(stamp - endNs / 1000000);
                     String nativeText = r.optString(type.equals("stall_raw") ? "rawNative" : "native");
@@ -198,6 +202,7 @@ final class TraceLinks {
                 if (date == null || date.getTime() > exit.optLong("exitWallMs"))
                     return null;
                 d.wall = date.getTime();
+                d.nearAnrExit = exit.optBoolean("reasonAnr") && exit.optLong("exitWallMs") - d.wall <= MAX_NEIGHBOR_MS;
                 d.prefix = primaryPrefix(in, d.pid);
                 return d;
             }
@@ -226,18 +231,33 @@ final class TraceLinks {
                 continue;
             Stall stall = new Stall(row);
             for (String name : (List<String>) row.get("files")) stall.read(new File(dir, name));
-            if (!stall.invalid && !stall.samples.isEmpty())
+            if (!stall.invalid && stall.start != Long.MAX_VALUE)
                 stalls.add(stall);
         }
         for (Dump dump : dumps) {
             List<Stall> candidates = new ArrayList<>();
+            long latestStart = Long.MIN_VALUE;
             for (Stall s : stalls) {
-                if (s.pid == dump.pid && s.process.equals(dump.process) && s.start <= dump.wall
-                    && dump.wall <= s.end) {
+                if (s.pid != dump.pid || !s.process.equals(dump.process) || s.start > dump.wall)
+                    continue;
+                latestStart = Math.max(latestStart, s.start);
+                if (!s.samples.isEmpty() && dump.wall <= s.end)
                     candidates.add(s);
-                    s.dumps.add(dump);
+            }
+            // The system may kill the process between watchdog samples. Bridge only a
+            // short, frame-supported gap from the last open probe to the fatal dump.
+            if (candidates.isEmpty() && dump.nearAnrExit) {
+                for (Stall s : stalls) {
+                    if (s.pid != dump.pid || !s.process.equals(dump.process) || s.start != latestStart ||
+                        s.ended || s.samples.isEmpty())
+                        continue;
+                    Map.Entry<Long, Long> last = s.samples.lastEntry();
+                    if (dump.wall - last.getKey() <= MAX_NEIGHBOR_MS &&
+                        matchesFrames(s.prefixes.get(last.getValue()), dump.prefix))
+                        candidates.add(s);
                 }
             }
+            for (Stall s : candidates) s.dumps.add(dump);
             if (candidates.size() > 1)
                 for (Stall s : candidates) s.ambiguous = true;
         }
