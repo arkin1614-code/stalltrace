@@ -26,6 +26,11 @@ public class MainActivity extends FlutterActivity {
                 } else if (call.method.equals("shortPlatformStall")) {
                     android.os.SystemClock.sleep(2700);
                     result.success(null);
+                } else if (call.method.equals("slowLoad")) {
+                    new Handler(Looper.getMainLooper()).post(() -> {
+                        System.loadLibrary("stalltrace_slow");
+                        result.success(null);
+                    });
                 } else if (call.method.equals("platformWait")) {
                     // Run in a later Android message, when Dart has yielded to the channel.
                     new Handler(Looper.getMainLooper()).post(() -> {
@@ -35,6 +40,7 @@ public class MainActivity extends FlutterActivity {
                     });
                 } else if (call.method.equals("export")) {
                     String directory = call.argument("directory");
+                    org.json.JSONArray catalog = new org.json.JSONArray((List<?>)call.argument("catalog"));
                     List<String> names = call.argument("files");
                     new Thread(() -> {
                         try {
@@ -42,6 +48,9 @@ public class MainActivity extends FlutterActivity {
                             if (root == null) throw new IOException("External storage unavailable");
                             File folder = new File(new File(root, "export"), UUID.randomUUID().toString());
                             if (!folder.isDirectory() && !folder.mkdirs()) throw new IOException("mkdir");
+                            try (FileOutputStream out = new FileOutputStream(new File(folder,"catalog.json"))) {
+                                out.write(catalog.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                            }
                             for (String name : names) {
                                 if (!name.equals(new File(name).getName())) throw new IOException("Invalid file name");
                                 File file = new File(directory, name);

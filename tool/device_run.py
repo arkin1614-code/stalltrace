@@ -42,15 +42,22 @@ def main():
         raise RuntimeError("app did not start: " + status)
 
     def tap_label(label):
-        for _ in range(5):
+        for attempt in range(5):
             xml = adb("exec-out", "uiautomator", "dump", "/dev/tty")
             if "<hierarchy" in xml:
                 root = ET.fromstring(xml[xml.index("<hierarchy"):xml.index("</hierarchy>") + 12])
                 for n in root.iter("node"):
                     if n.get("package") == PKG and label in (n.get("text"), n.get("content-desc")):
                         x1, y1, x2, y2 = map(int, re.findall(r"\d+", n.get("bounds")))
-                        adb("shell", "input", "tap", str((x1+x2)//2), str((y1+y2)//2))
-                        return
+                        if x2 > x1 and y2 > y1:
+                            adb("shell", "input", "tap", str((x1+x2)//2), str((y1+y2)//2))
+                            return
+                scroll = next((n for n in root.iter("node") if n.get("package") == PKG and
+                               n.get("scrollable") == "true"), None)
+                if scroll is not None and attempt > 0:
+                    x1,y1,x2,y2 = map(int,re.findall(r"\d+",scroll.get("bounds")))
+                    x = str((x1+x2)//2)
+                    adb("shell","input","swipe",x,str(y2-(y2-y1)//4),x,str(y1+(y2-y1)//4),"350")
             time.sleep(0.4)
         raise RuntimeError("missing Flutter control: " + label)
 
@@ -86,12 +93,14 @@ def main():
         key: adb("shell", "getprop", prop) for key, prop in (
             ("fingerprint", "ro.build.fingerprint"), ("api", "ro.build.version.sdk"),
             ("abi", "ro.product.cpu.abi"))}
-    device["suiteVersion"] = 2
+    device["suiteVersion"] = 3
     args.out.joinpath("device.json").write_text(json.dumps(device, indent=2))
     cases = []
-    for name in ("Short stall", "Dart CPU", "Native FFI", "Native only"):
-        adb("shell", "am", "force-stop", PKG)
-        pid = launch()
+    for name in ("Short stall", "Dart CPU", "Native FFI", "Native only", "Switch early", "Switch late"):
+        # The first two stalls deliberately share a process. Only the second gets an ANR.
+        if name != "Dart CPU":
+            adb("shell", "am", "force-stop", PKG)
+            pid = launch()
         start = now()
         tap_label(name)
         begin = wait_mark(pid, "begin " + name, start, 6)
@@ -99,6 +108,8 @@ def main():
         # A second touch is delivered to the already blocked, focused window.
         if name == "Native FFI":
             time.sleep(args.ffi_input_delay)
+        if name == "Switch late":
+            wait_mark(pid, "switch to native", since, 16)
         if int(device["api"]) < 30:
             # Older "input" waits for delivery. Queue another focused event
             # while the first injector is still waiting on the frozen window.
@@ -113,6 +124,8 @@ def main():
         until = float(end.split()[0])
         evidence = events(pid, since, until)
         case = {"name": name, "pid": pid, "begin": begin, "end": end, "am_anr": evidence}
+        if name.startswith("Switch "):
+            case["switched"] = wait_mark(pid, "switch to native", since, 3)
         cases.append(case)
         args.out.joinpath("cases.json").write_text(json.dumps(cases, indent=2) + "\n")
         print(name, pid, "system ANRs", len(evidence), flush=True)
@@ -130,6 +143,19 @@ def main():
             raise RuntimeError("interruption fixture already returned")
         args.out.joinpath("interrupted.json").write_text(json.dumps({
             "pid": pid, "begin": begin, "stoppedWall": stopped}, indent=2))
+        adb("shell", "am", "force-stop", PKG)
+        pid = launch()
+        start = now()
+        tap_label("Slow load")
+        begin = wait_mark(pid, "entered slow constructor", start, 8)
+        # Cross the first 16-sample segment while the linker still holds its lock.
+        time.sleep(36)
+        stopped = now()
+        adb("shell", "am", "force-stop", PKG)
+        if mark(pid, "left slow constructor", start):
+            raise RuntimeError("loader fixture already returned")
+        args.out.joinpath("slow.json").write_text(json.dumps({
+            "pid": pid, "begin": begin, "stoppedWall": stopped}, indent=2))
     # The probes were allowed to recover. A subsequent explicit stop is not
     # assumed to be an ANR exit. Collect the real historical reasons on restart.
     adb("shell", "am", "force-stop", PKG)
@@ -141,7 +167,13 @@ def main():
                         r"/files/export/[0-9a-f-]{36}", exported):
         raise RuntimeError("unexpected export destination")
     adb("pull", exported, str(args.out / "raw"))
-    adb("pull", "/apex/com.android.runtime/lib64/bionic/libc.so", str(args.out / "libc.so"))
+    candidates = ("/apex/com.android.runtime/lib64/bionic/libc.so", "/system/lib64/libc.so")
+    for path in candidates:
+        if adb("shell", "sh", "-c", "'test -r " + path + " && echo yes || echo no'") == "yes":
+            adb("pull", path, str(args.out / "libc.so"))
+            break
+    else:
+        raise RuntimeError("No readable ARM64 device libc")
 
 
 if __name__ == "__main__":

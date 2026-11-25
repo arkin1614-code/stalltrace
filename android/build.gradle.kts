@@ -1,5 +1,5 @@
 group = "dev.stalltrace"
-version = "0.1.0-dev.2"
+version = "0.1.0-dev.3"
 
 plugins { id("com.android.library") }
 

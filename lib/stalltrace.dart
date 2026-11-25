@@ -25,6 +25,9 @@ enum StalltraceReportKind {
   processExit,
 }
 
+/// Result of matching a foreground stall to an Android input-ANR dump.
+enum StalltraceTraceAssociation { none, matched, ambiguous }
+
 /// A snapshot of one report's metadata. File names are relative to the session directory.
 final class StalltraceReport {
   const StalltraceReport._(
@@ -33,6 +36,11 @@ final class StalltraceReport {
     this.confirmedAnrExit,
     this.active,
     this.files,
+    this.traceAssociation,
+    this.exitReportId,
+    this.traceWallMs,
+    this.sampleDeltaMs,
+    this.sampleMonoNs,
   );
 
   /// Opaque identifier accepted by [Stalltrace.deleteReport].
@@ -51,6 +59,21 @@ final class StalltraceReport {
   /// Includes any rotated stall segments or accompanying system trace.
   final List<String> files;
 
+  /// Matched only when both the stall and the primary system dump are unique.
+  final StalltraceTraceAssociation traceAssociation;
+
+  /// ID of the process exit containing the matched dump.
+  final String? exitReportId;
+
+  /// Wall-clock time of the system dump in milliseconds since the Unix epoch.
+  final int? traceWallMs;
+
+  /// Signed difference between nearest capture and dump, in milliseconds.
+  final int? sampleDeltaMs;
+
+  /// Monotonic timestamp identifying that exact native sample in the JSONL.
+  final int? sampleMonoNs;
+
   static StalltraceReport _decode(Object? value) {
     if (value case {
       'id': final String id,
@@ -64,6 +87,19 @@ final class StalltraceReport {
         'processExit' => StalltraceReportKind.processExit,
         _ => throw const FormatException('Unknown Stalltrace report kind'),
       };
+      final association = switch (value['traceAssociation']) {
+        null || 'none' => StalltraceTraceAssociation.none,
+        'ambiguous' => StalltraceTraceAssociation.ambiguous,
+        'matched' => StalltraceTraceAssociation.matched,
+        _ => throw const FormatException('Unknown trace association'),
+      };
+      if (association == StalltraceTraceAssociation.matched &&
+          (value['exitReportId'] is! String ||
+              value['traceWallMs'] is! int ||
+              value['sampleDeltaMs'] is! int ||
+              value['sampleMonoNs'] is! int)) {
+        throw const FormatException('Incomplete trace association');
+      }
       if (files.every((file) => file is String)) {
         return StalltraceReport._(
           id,
@@ -71,6 +107,11 @@ final class StalltraceReport {
           confirmed,
           active,
           List<String>.unmodifiable(files.cast<String>()),
+          association,
+          value['exitReportId'] as String?,
+          value['traceWallMs'] as int?,
+          value['sampleDeltaMs'] as int?,
+          value['sampleMonoNs'] as int?,
         );
       }
     }

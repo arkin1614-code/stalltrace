@@ -1,19 +1,15 @@
 #define _GNU_SOURCE
 // Foreground platform-thread sampler for the ARM64 Android processes.
-#include <dlfcn.h>
-#include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <jni.h>
 #include <limits.h>
-#include <link.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
-#include <string.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <ucontext.h>
@@ -114,53 +110,6 @@ Java_dev_stalltrace_AnrMonitor_installSampler(JNIEnv *env, jclass type) {
     return available;
 }
 
-typedef struct {
-    uintptr_t address, offset;
-    char module[144], id[129];
-} Frame;
-
-static void get_build_id(const struct dl_phdr_info *lib, Frame *frame) {
-    for (int i = 0; i < lib->dlpi_phnum; ++i) {
-        const ElfW(Phdr) *p = &lib->dlpi_phdr[i];
-        if (p->p_type != PT_NOTE || !(p->p_flags & PF_R)) continue;
-        const unsigned char *ptr = (void *)(lib->dlpi_addr + p->p_vaddr);
-        size_t left = p->p_memsz;
-        while (left >= sizeof(ElfW(Nhdr))) {
-            ElfW(Nhdr) h;
-            memcpy(&h, ptr, sizeof(h));
-            size_t name = ((size_t)h.n_namesz + 3) & ~(size_t)3;
-            size_t desc = ((size_t)h.n_descsz + 3) & ~(size_t)3;
-            size_t total = sizeof(h) + name + desc;
-            if (total > left) break;
-            if (h.n_type == NT_GNU_BUILD_ID && h.n_namesz == 4 &&
-                !memcmp(ptr + sizeof(h), "GNU", 4) &&
-                h.n_descsz && h.n_descsz <= 64) {
-                for (size_t j = 0; j < h.n_descsz; ++j)
-                    snprintf(frame->id + 2*j, 3, "%02x", ptr[sizeof(h) + name + j]);
-                return;
-            }
-            ptr += total; left -= total;
-        }
-    }
-}
-
-static int resolve(struct dl_phdr_info *lib, size_t size, void *data) {
-    (void)size;
-    Frame *f = data;
-    for (int i = 0; i < lib->dlpi_phnum; ++i) {
-        const ElfW(Phdr) *p = &lib->dlpi_phdr[i];
-        uintptr_t start = lib->dlpi_addr + p->p_vaddr;
-        if (p->p_type != PT_LOAD || !(p->p_flags & PF_X) ||
-            f->address < start || f->address - start >= p->p_memsz) continue;
-        const char *name = strrchr(lib->dlpi_name, '/');
-        snprintf(f->module, sizeof(f->module), "%s", name ? name + 1 : lib->dlpi_name);
-        f->offset = f->address - lib->dlpi_addr;
-        get_build_id(lib, f);
-        return 1;
-    }
-    return 0;
-}
-
 JNIEXPORT jstring JNICALL
 Java_dev_stalltrace_AnrMonitor_sample(JNIEnv *env, jclass type) {
     (void)type;
@@ -180,18 +129,29 @@ Java_dev_stalltrace_AnrMonitor_sample(JNIEnv *env, jclass type) {
         s.count < 1 || s.count > MAX_FRAMES ||
         (size_t)n != offsetof(Snapshot, pc) + s.count*sizeof(uintptr_t)) return NULL;
 
-    // Loader traversal, formatting and JVM calls are outside the signal handler.
-    char text[16000];
+    char text[1600];
     int used = snprintf(text, sizeof(text), "%lld %d %d\n", (long long)s.when_ns, main_tid, s.stop);
     for (int i = 0; i < s.count; ++i) {
-        // xpaclri strips a signed return-address PAC on capable CPUs, NOP elsewhere.
         register uintptr_t address __asm__("x30") = s.pc[i];
         __asm__ volatile("hint #7" : "+r"(address));
-        Frame f = {.address = address - (i && address >= 4 ? 4 : 0)};
-        dl_iterate_phdr(resolve, &f);
-        used += snprintf(text + used, sizeof(text) - used, "%s %s %s %lx\n",
-                         i == 0 ? "pc" : (i == 1 ? "lr" : "call"), f.module[0] ? f.module : "?",
-                         f.id[0] ? f.id : "-", (unsigned long)f.offset);
+        if (i && address >= 4) address -= 4;
+        used += snprintf(text + used, sizeof(text) - used, "%s %lx\n",
+                i == 0 ? "pc" : (i == 1 ? "lr" : "call"), (unsigned long)address);
     }
     return (*env)->NewStringUTF(env, text);
+}
+
+// Bind before monitoring starts. Lazy JNI lookup can itself wait on a later dlopen.
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+    (void)reserved;
+    JNIEnv *env;
+    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
+    jclass monitor = (*env)->FindClass(env, "dev/stalltrace/AnrMonitor");
+    if (!monitor) return JNI_ERR;
+    const JNINativeMethod methods[] = {
+        {"installSampler", "()Z", (void *)Java_dev_stalltrace_AnrMonitor_installSampler},
+        {"sample", "()Ljava/lang/String;", (void *)Java_dev_stalltrace_AnrMonitor_sample}
+    };
+    if ((*env)->RegisterNatives(env, monitor, methods, 2) != JNI_OK) return JNI_ERR;
+    return JNI_VERSION_1_6;
 }

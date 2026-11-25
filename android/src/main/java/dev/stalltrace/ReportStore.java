@@ -24,7 +24,7 @@ final class ReportStore {
         ActiveReport() { super("This stall is still being recorded"); }
     }
 
-    static List<Map<String, Object>> list(File dir) throws IOException {
+    private static Map<String, List<String>> groups(File dir) throws IOException {
         Map<String, List<String>> groups = new TreeMap<>();
         for (File file : entries(dir)) {
             Matcher match = FILE.matcher(file.getName());
@@ -32,6 +32,11 @@ final class ReportStore {
             String id = match.group(1) == null ? match.group(2) : match.group(1);
             if (!marker(dir, id).exists()) groups.computeIfAbsent(id, unused -> new ArrayList<>()).add(file.getName());
         }
+        return groups;
+    }
+
+    static List<Map<String, Object>> list(File dir) throws IOException {
+        Map<String,List<String>> groups = groups(dir);
         List<Map<String, Object>> reports = new ArrayList<>();
         for (Map.Entry<String, List<String>> group : groups.entrySet()) {
             String id = group.getKey();
@@ -46,7 +51,29 @@ final class ReportStore {
             row.put("files", files);
             reports.add(row);
         }
+        TraceLinks.attach(dir, reports);
         return reports;
+    }
+
+    static void trimStalls(File dir) throws IOException { trim(dir, false, 24); }
+    static void trimExits(File dir) throws IOException { trim(dir, true, 12); }
+
+    private static void trim(File dir, boolean exits, int limit) throws IOException {
+        Map<String, Long> newest = new HashMap<>();
+        for (Map.Entry<String,List<String>> group : groups(dir).entrySet()) {
+            String id = group.getKey();
+            if (id.startsWith("exit-") != exits) continue;
+            long last = 0;
+            for (String name : group.getValue()) last = Math.max(last, new File(dir,name).lastModified());
+            newest.put(id, last);
+        }
+        List<String> ids = new ArrayList<>(newest.keySet());
+        ids.sort(Comparator.<String>comparingLong(newest::get).thenComparing(id -> id));
+        int excess = ids.size() - limit;
+        for (String id : ids) {
+            if (excess <= 0) break;
+            if (!id.equals(activeStall) && delete(dir, id)) excess--;
+        }
     }
 
     private static boolean confirmedExit(File meta) throws IOException {

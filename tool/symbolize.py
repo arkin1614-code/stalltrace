@@ -24,6 +24,8 @@ class Symbols:
                 raise ValueError(f"no ELF build ID in {path}")
             self.ids[module] = build_id[1].lower()
 
+        self.by_id = {identity: name for name, identity in self.ids.items()}
+
     @functools.lru_cache(maxsize=8)
     def frameless_ranges(self, module):
         # Accept only the simple AArch64 leaf recipe for the entire FDE.
@@ -56,6 +58,8 @@ class Symbols:
     @functools.lru_cache(maxsize=8192)
     def resolve(self, frame):
         kind, module, identity, vaddr = frame.split()
+        if module.endswith(".apk"):
+            module = self.by_id.get(identity, module)
         if module not in self.objects:
             return [{"module": module, "pcKind": kind, "vaddr": "0x"+vaddr, "function": "??", "location": "??"}]
         if identity != self.ids[module]:
@@ -100,6 +104,33 @@ def main_thread_dumps(trace, symbols):
         yield {"pid": int(pid), "process": process, "stamp": stamp, "stack": stack}
 
 
+def complete_records(path):
+    with path.open() as stream:
+        for line in stream:
+            if not line.endswith("\n"):
+                break
+            yield json.loads(line)
+
+
+def samples_with_raw(records):
+    """Join adjacent records from one segment, preserving a process-killed final capture."""
+    raw = None
+    for row in records:
+        if raw is not None:
+            if (row.get("type") == "stall_sample" and row.get("sampleStartMonoNs") == raw.get("sampleStartMonoNs")
+                    and row.get("session") == raw.get("session") and row.get("probe") == raw.get("probe")):
+                row = {**raw, **row}
+            else:
+                yield {**raw, "type": "stall_sample", "native": None}
+            raw = None
+        if row.get("type") == "stall_raw":
+            raw = row
+        else:
+            yield row
+    if raw is not None:
+        yield {**raw, "type": "stall_sample", "native": None}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("input", type=Path, help="an exported .jsonl or .trace")
@@ -117,16 +148,12 @@ def main():
         for dump in main_thread_dumps(args.input.read_text(errors="replace"), symbols):
             print(json.dumps(dump))
         return
-    with args.input.open() as stream:
-        for line in stream:
-            if not line.endswith("\n"):  # a process may die during its last append
-                break
-            row = json.loads(line)
-            if row.get("type") == "stall_sample" and row.get("native"):
-                header, *pcs = row["native"].splitlines()
-                mono, tid, stop = map(int, header.split())
-                row.update(captureMonoNs=mono, tid=tid, stopCode=stop, stack=symbols.decode(pcs))
-            print(json.dumps(row))
+    for row in samples_with_raw(complete_records(args.input)):
+        if row.get("type") == "stall_sample" and row.get("native"):
+            header, *pcs = row["native"].splitlines()
+            mono, tid, stop = map(int, header.split())
+            row.update(captureMonoNs=mono, tid=tid, stopCode=stop, stack=symbols.decode(pcs))
+        print(json.dumps(row))
 
 
 if __name__ == "__main__":

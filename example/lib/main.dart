@@ -71,6 +71,18 @@ class _LabState extends State<Lab> {
         final reports = await Stalltrace.listReports();
         status = (await channel.invokeMethod<String>('export', {
           'directory': widget.session.reportsDirectory,
+          'catalog': [
+            for (final r in reports)
+              {
+                'id': r.id,
+                'kind': r.kind.name,
+                'association': r.traceAssociation.name,
+                'exitReportId': r.exitReportId,
+                'sampleMonoNs': r.sampleMonoNs,
+                'sampleDeltaMs': r.sampleDeltaMs,
+                'traceWallMs': r.traceWallMs,
+              },
+          ],
           'files': [for (final report in reports) ...report.files],
         }))!;
         await channel.invokeMethod<void>('mark', 'exported $status');
@@ -79,6 +91,23 @@ class _LabState extends State<Lab> {
           'mark',
           'begin $name dartTid=${_tid()}',
         );
+        if (name.startsWith('Switch ')) {
+          fixtureDartCaller(11000);
+          DynamicLibrary.open('libstalltrace_fixture.so')
+              .lookupFunction<Void Function(), void Function()>(
+                'fixture_phase_mark',
+              )();
+          fixtureDartFfiCaller(13000);
+          await channel.invokeMethod<void>('mark', 'end $name');
+          status = 'Ready';
+          return;
+        }
+        if (name == 'Slow load') {
+          await channel.invokeMethod<void>('slowLoad');
+          await channel.invokeMethod<void>('mark', 'end $name');
+          status = 'Ready';
+          return;
+        }
         if (name == 'Native only') {
           await channel.invokeMethod<void>('platformWait');
           await channel.invokeMethod<void>('mark', 'end $name');
@@ -104,26 +133,31 @@ class _LabState extends State<Lab> {
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('Stalltrace example')),
     body: Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (final name in [
-            'Dart CPU',
-            'Native FFI',
-            'Native only',
-            'Short stall',
-            'Export',
-            collecting ? 'Pause sampling' : 'Resume sampling',
-          ])
-            Padding(
-              padding: const EdgeInsets.all(6),
-              child: FilledButton(
-                onPressed: busy ? null : () => run(name),
-                child: Text(name),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final name in [
+              'Dart CPU',
+              'Native FFI',
+              'Native only',
+              'Short stall',
+              'Switch early',
+              'Switch late',
+              'Slow load',
+              'Export',
+              collecting ? 'Pause sampling' : 'Resume sampling',
+            ])
+              Padding(
+                padding: const EdgeInsets.all(6),
+                child: FilledButton(
+                  onPressed: busy ? null : () => run(name),
+                  child: Text(name),
+                ),
               ),
-            ),
-          Text(status, textAlign: TextAlign.center),
-        ],
+            Text(status, textAlign: TextAlign.center),
+          ],
+        ),
       ),
     ),
   );

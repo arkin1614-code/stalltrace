@@ -35,6 +35,35 @@ void main() {
     await expectLater(Stalltrace.start(), throwsFormatException);
   });
   test(
+    'decodes a recovered input ANR independently of the exit reason',
+    () async {
+      messenger.setMockMethodCallHandler(
+        channel,
+        (call) async => [
+          {
+            'id': 'stall',
+            'kind': 'stall',
+            'confirmedAnrExit': false,
+            'active': false,
+            'files': ['s.jsonl'],
+            'traceAssociation': 'matched',
+            'exitReportId': 'exit',
+            'traceWallMs': 2000,
+            'sampleDeltaMs': -50,
+            'sampleMonoNs': 12345,
+          },
+        ],
+      );
+      final report = (await Stalltrace.listReports()).single;
+      expect(report.traceAssociation, StalltraceTraceAssociation.matched);
+      expect(report.confirmedAnrExit, isFalse);
+      expect(report.exitReportId, 'exit');
+      expect(report.sampleDeltaMs, -50);
+      expect(report.sampleMonoNs, 12345);
+    },
+  );
+
+  test(
     'lists grouped evidence and deletes by opaque ID without starting',
     () async {
       final methods = <String>[];

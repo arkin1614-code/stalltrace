@@ -4,16 +4,32 @@ from datetime import datetime
 import json
 from pathlib import Path
 import re
-from symbolize import Symbols, main_thread_dumps
+from symbolize import Symbols, main_thread_dumps, complete_records, samples_with_raw
 
 PACKAGE = "dev.stalltrace.stalltrace_example"
+
+
+# Source ranges belong to the version of the example used to build the ELF.
+SOURCE = {
+    "fixtureDartCompute": ("lib/main.dart", 17, 26),
+    "fixtureDartCaller": ("lib/main.dart", 29, 29),
+    "fixtureDartFfiCaller": ("lib/main.dart", 32, 35),
+    "fixture_native_wait": ("src/main/cpp/fixtures.c", 6, 9),
+    "fixture_native_entry": ("src/main/cpp/fixtures.c", 10, 13),
+    "fixture_slow_constructor": ("src/main/cpp/slow.c", 5, 10),
+}
+DART = ["fixtureDartCompute", "fixtureDartCaller"]
+FFI = ["fixture_native_wait", "fixture_native_entry", "fixtureDartFfiCaller"]
 
 
 def subsequence(frames, expected):
     i = 0
     for frame in frames:
-        if (i < len(expected) and frame["function"] == expected[i] and
-                re.search(r":[1-9]\d*(?::\d+)?$", frame["location"])):
+        if i == len(expected) or frame["function"] != expected[i]:
+            continue
+        path, lo, hi = SOURCE[expected[i]]
+        pos = re.fullmatch(r"(.+?):(\d+)(?::\d+)?", frame["location"])
+        if pos and (pos[1] == path or pos[1].endswith("/" + path)) and lo <= int(pos[2]) <= hi:
             i += 1
     return i == len(expected)
 
@@ -47,20 +63,20 @@ def verify_case(case, rows, symbols, raw, api):
     name, pid = case["name"], case["pid"]
     begin, end = [float(case[key].split()[0]) for key in ("begin", "end")]
     dart_tid = int(re.search(r"dartTid=(\d+)", case["begin"])[1])
-    expected = (["fixture_native_wait", "fixture_native_entry", "fixtureDartFfiCaller"]
-                if name == "Native FFI" else ["fixtureDartCompute", "fixtureDartCaller"])
+    switched = float(case["switched"].split()[0]) if "switched" in case else None
+    expected = FFI if name in ("Native FFI", "Switch late") else DART
     if name == "Native only":
-        expected = ["fixture_native_wait", "fixture_native_entry"]
-    def matches(stack):
-        if name == "Native only" and any(f["module"] == "libapp.so" for f in stack):
-            return False
-        return subsequence(stack, expected)
+        expected = FFI[:2]
+    def phase(at):
+        if switched is None:
+            return expected
+        return DART if at < switched else FFI
     observed = []
     for row in rows:
         wall = row["sampleWallMs"] / 1000
         if row["pid"] != pid or not begin <= wall <= end:
             continue
-        stack, stop, qualified = [], None, False
+        stack, stop, qualified, mono = [], None, False, None
         if row["native"]:
             header, *lines = row["native"].splitlines()
             mono, target, stop = map(int, header.split())
@@ -70,18 +86,44 @@ def verify_case(case, rows, symbols, raw, api):
                          and target == dart_tid == pid and row["pendingAfterNative"] and begin <= wall <= end)
             stack = symbols.decode(lines)
         observed.append({"wall": wall, "probeAgeMs": row["ageMs"], "stopCode": stop,
-                         "hit": qualified and matches(stack), "stack": stack})
+                         "hit": qualified and subsequence(stack, phase(wall)), "stack": stack,
+                         "captureMonoNs": mono, "qualified": qualified,
+                         "reportId": str(row["session"]) + "-" + str(row["probe"])})
     times = [float(e.split()[0]) for e in case["am_anr"]
              if re.search(r"\[\d+," + str(pid) + "," + re.escape(PACKAGE) + ",", e)
              and "Input dispatching timed out" in e and begin <= float(e.split()[0]) <= end]
     hits = [s for s in observed if s["hit"]]
     delay = min((abs(s["wall"] - t) * 1000 for s in hits for t in times), default=None)
     system = system_stack(raw, case, symbols, begin, end)
-    system_hit = bool(system and matches(system["stack"]))
+    system_hit = bool(system and subsequence(system["stack"], phase(system["dumpWall"])))
     if name == "Short stall":
         passed = bool(hits) and not case["am_anr"] and end - begin < 5
     else:
         passed = len(hits) >= 2 and delay is not None and delay <= 1500 and (system_hit if api >= 30 else system is None)
+    if name == "Native only":
+        passed = passed and not any(f["module"] == "libapp.so"
+                    for o in observed if o["qualified"] for f in o["stack"])
+        if system:
+            passed = passed and not any(f["module"] == "libapp.so" for f in system["stack"])
+    if switched is not None:
+        passed = (passed and len(times) == 1 and phase(times[0]) == expected and
+                  all(any(phase(o["wall"]) == frames for o in hits) for frames in (DART, FFI)) and
+                  any(abs(o["wall"] - times[0]) <= 1.5 and phase(o["wall"]) == expected for o in hits))
+    catalog_path = raw / "catalog.json"
+    if catalog_path.exists():
+        catalog = {r["id"]: r for r in json.loads(catalog_path.read_text())}
+        report_ids = {o["reportId"] for o in hits}
+        linked = catalog.get(next(iter(report_ids)), {}) if len(report_ids) == 1 else {}
+        if api >= 30 and system:
+            selected = next((o for o in hits if o["captureMonoNs"] == linked.get("sampleMonoNs")), None)
+            passed = (passed and linked.get("association") == "matched" and selected is not None and
+                      linked.get("exitReportId") == Path(system["traceFile"]).stem and
+                      abs(linked["traceWallMs"]/1000 - system["dumpWall"]) < 0.002 and
+                      abs((selected["wall"]-system["dumpWall"])*1000 - linked["sampleDeltaMs"]) < 3)
+            if switched is not None:
+                passed = passed and phase(selected["wall"]) == phase(system["dumpWall"]) == expected
+        else:
+            passed = passed and linked.get("association") == "none"
     return {"case": name, "pid": pid, "dartTid": dart_tid, "passed": passed, "expected": expected,
             "samples": len(observed), "hits": len(hits), "durationMs": round(1000*(end-begin)),
             "closestHitToSystemEventMs": round(delay) if delay is not None else None,
@@ -92,7 +134,7 @@ def persisted_interruption(raw, sample, symbols):
     pid = sample["pid"]
     begin = float(sample["begin"].split()[0])
     for file in raw.glob("*.jsonl"):
-        rows = list(read_complete_rows(file))
+        rows = list(complete_records(file))
         if any(r.get("type") in ("ack", "lifecycle_end") for r in rows):
             continue
         for row in rows:
@@ -108,25 +150,21 @@ def persisted_interruption(raw, sample, symbols):
     return False
 
 
-def read_complete_rows(file):
-    with file.open() as stream:
-        for line in stream:
-            if not line.endswith("\n"):
-                break
-            yield json.loads(line)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ["run", "llvm", "dart", "native", "report"]:
         parser.add_argument("--" + name, required=True, type=Path)
+    parser.add_argument("--slow", type=Path, help="unstripped slow constructor ELF for interrupted runs")
     args = parser.parse_args()
     raw = args.run / "raw"
-    symbols = Symbols(args.llvm, {"libapp.so": args.dart, "libstalltrace_fixture.so": args.native,
-                                 "libc.so": args.run / "libc.so"})
+    objects = {"libapp.so": args.dart, "libstalltrace_fixture.so": args.native,
+                                 "libc.so": args.run / "libc.so"}
+    if args.slow:
+        objects["libstalltrace_slow.so"] = args.slow
+    symbols = Symbols(args.llvm, objects)
     rows = []
     for file in raw.glob("*.jsonl"):
-        for row in read_complete_rows(file):
+        for row in samples_with_raw(complete_records(file)):
             if row["type"] == "stall_sample":
                 rows.append(row)
     device = json.loads((args.run / 'device.json').read_text())
@@ -136,6 +174,10 @@ def main():
     expected = ["Dart CPU", "Native FFI", "Short stall"]
     if device.get("suiteVersion", 1) >= 2 or "Native only" in names:
         expected.append("Native only")
+    if device.get("suiteVersion", 1) >= 3:
+        expected.extend(["Switch early", "Switch late"])
+        if not (raw / "catalog.json").is_file():
+            parser.error("the run did not export its public API report catalog")
     passed = names == sorted(expected) and all(c["passed"] for c in cases)
     report = {"device": json.loads((args.run / "device.json").read_text()),
               "buildIds": symbols.ids, "cases": cases, "passed": passed}
@@ -144,10 +186,42 @@ def main():
         saved = persisted_interruption(raw, json.loads(interrupted.read_text()), symbols)
         report["interruptedSamplePersisted"] = saved
         passed = report["passed"] = passed and saved
+    slow = args.run / "slow.json"
+    if slow.exists() or (interrupted.exists() and device.get("suiteVersion", 1) >= 3):
+        if not args.slow or not slow.exists():
+            parser.error("slow-loader evidence and --slow ELF are required")
+        fixture = json.loads(slow.read_text())
+        begin = float(fixture["begin"].split()[0])
+        segments = set()
+        for file in raw.glob("*.jsonl"):
+            durable = set()
+            captured = list(complete_records(file))
+            if any(r["type"] in ("ack", "lifecycle_end") for r in captured):
+                continue
+            for row in captured:
+                if row.get("pid") != fixture["pid"] or not begin <= row.get("sampleWallMs",0)/1000 <= fixture["stoppedWall"]:
+                    continue
+                if row["type"] == "stall_raw" and row.get("mappings"):
+                    durable.add(row["rawNative"].splitlines()[0])
+                if row["type"] == "stall_sample" and row.get("native"):
+                    header, *pcs = row["native"].splitlines()
+                    mono, tid, _ = map(int, header.split())
+                    if (header in durable and tid == fixture["pid"] and row["pendingAfterNative"] and
+                            row["sampleStartMonoNs"] <= mono <= row["sampleEndMonoNs"] and
+                            subsequence(symbols.decode(pcs), ["fixture_slow_constructor"])):
+                        segments.add(file.name)
+        intact = any(name.endswith("-tail1.jsonl") and name.replace("-tail1.jsonl", ".jsonl") in segments
+                     for name in segments)
+        passed = report["passed"] = passed and intact
+        report["slowLoaderSegments"] = sorted(segments)
     args.report.write_text(json.dumps(report, indent=2) + "\n")
     for case in cases:
         print(case["case"], "PASS" if case["passed"] else "FAIL", case["hits"], "/", case["samples"],
               "closest ms:", case["closestHitToSystemEventMs"], "system trace:", bool(case["systemTrace"]))
+    if "interruptedSamplePersisted" in report:
+        print("Interrupted Dart sample persisted:", report["interruptedSamplePersisted"])
+    if "slowLoaderSegments" in report:
+        print("Slow-loader head and rotated segment:", intact, "decoded segments:", len(segments))
     raise SystemExit(0 if passed else 1)
 
 

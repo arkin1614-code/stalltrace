@@ -31,8 +31,10 @@ The plugin writes to the app's private no-backup directory. A `.jsonl` contains 
 ```dart
 final reports = await Stalltrace.listReports();
 for (final report in reports) {
-  if (report.confirmedAnrExit) {
-    // Android attributed this process exit to an ANR.
+  if (report.traceAssociation == StalltraceTraceAssociation.matched) {
+    // report.exitReportId identifies the Android record carrying the dump.
+    // report.sampleMonoNs selects the closest captured stack in this stall.
+    // report.sampleDeltaMs is negative when the sample preceded the dump.
   }
 }
 // When the host or its user chooses to remove a specific report:
@@ -40,6 +42,8 @@ for (final report in reports) {
 ```
 
 Listing returns opaque IDs, the evidence kind, active state and relative file names. A stall includes its rotated segments; an exit record includes its available trace. Deletion is idempotent and can return `report_active` during capture. [Data and deletion semantics](doc/PRIVACY.md)
+
+The association uses the primary input-timeout dump's PID, process name and millisecond timestamp, the observed stall interval and its native sample times. `ambiguous` means multiple matches are possible. `none` covers unavailable evidence, including older stall records without a process name, unsupported trace formats and clock changes. `confirmedAnrExit` describes Android's recorded cause of death. A recovered input ANR can have a matched trace on a subsequent exit with a different cause. The signed delta measures distance to the dump time.
 
 ## Read a stack
 

@@ -13,8 +13,6 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.Comparator;
 import java.util.UUID;
 import java.util.HashSet;
 import java.util.List;
@@ -43,13 +41,14 @@ final class AnrMonitor {
         File dir = directory(context);
         if (!dir.isDirectory() && !dir.mkdirs()) throw new IllegalStateException("Cannot create reports directory");
         started = true;
-        Thread monitor = new Thread(() -> run(dir, nativeReady), "anr-watchdog");
+        Thread monitor = new Thread(() -> run(dir, nativeReady, Build.VERSION.SDK_INT >= 28 ? android.app.Application.getProcessName() : context.getPackageName()), "anr-watchdog");
         monitor.setDaemon(true);
         monitor.start();
         Context app = context.getApplicationContext();
         ReportStore.IO.execute(() -> {
             try {
                 ReportStore.recover(dir, null);
+                ReportStore.trimStalls(dir);
                 if (Build.VERSION.SDK_INT >= 30) ExitHistory.collect(app, dir);
             } catch (IOException failure) { Log.e("Stalltrace", "recover reports", failure); }
         });
@@ -71,7 +70,7 @@ final class AnrMonitor {
 
     static File directory(Context context) { return new File(context.getNoBackupFilesDir(), "stalltrace"); }
 
-    private static void run(File dir, boolean nativeReady) {
+    private static void run(File dir, boolean nativeReady, String process) {
         String session = UUID.randomUUID().toString();
         AtomicLong ack = new AtomicLong();
         long sequence = 0;
@@ -97,18 +96,26 @@ final class AnrMonitor {
                 if (count == 0) ReportStore.activeStall = session + "-" + id;
                 count++;
                 try {
+                    List<KernelStack.Mapping> mapsBefore = nativeReady ? KernelStack.readMappings() : null;
                     long before = System.nanoTime();
-                    String frames = nativeReady ? sample() : null;
+                    String raw = nativeReady ? sample() : null;
+                    long end = System.nanoTime(), sampleWall = System.currentTimeMillis();
                     boolean pendingAfter = ack.get() != id && EPOCH.get() == epoch;
                     JSONObject row = new JSONObject();
                     row.put("type", "stall_sample").put("session", session).put("probe", id)
-                        .put("pid", Process.myPid()).put("probeWallMs", wall)
+                        .put("process", process).put("pid", Process.myPid()).put("probeWallMs", wall)
                         .put("probeUptimeMs", begin).put("ageMs", age)
-                        .put("sampleWallMs", System.currentTimeMillis())
-                        .put("sampleStartMonoNs", before).put("sampleEndMonoNs", System.nanoTime())
-                        .put("pendingAfterNative", pendingAfter)
-                        .put("native", frames == null ? JSONObject.NULL : frames);
-                    append(file, row); // Persist the native record before requesting ART frames.
+                        .put("sampleWallMs", sampleWall)
+                        .put("sampleStartMonoNs", before).put("sampleEndMonoNs", end)
+                        .put("pendingAfterNative", pendingAfter);
+                    if (raw != null) {
+                        KernelStack capture = new KernelStack(raw, mapsBefore);
+                        row.put("type", "stall_raw").put("rawNative", raw).put("mappings", capture.mappings);
+                        append(file, row);
+                        row.remove("rawNative"); row.remove("mappings");
+                        row.put("type", "stall_sample").put("native", capture.resolve());
+                    } else row.put("native", JSONObject.NULL);
+                    append(file, row);
                     if (pendingAfter) {
                         JSONArray stack = new JSONArray();
                         long javaStart = System.nanoTime();
@@ -125,7 +132,9 @@ final class AnrMonitor {
                 try {
                     append(file, new JSONObject().put("type", ack.get() == id ? "ack" : "lifecycle_end")
                         .put("wallMs", System.currentTimeMillis()).put("uptimeMs", SystemClock.uptimeMillis()));
-                    ReportStore.IO.execute(() -> trim(dir, ".jsonl", 24));
+                    ReportStore.IO.execute(() -> {
+                        try { ReportStore.trimStalls(dir); } catch (IOException e) { Log.e("Stalltrace", "trim", e); }
+                    });
                 } catch (Exception e) { Log.e("Stalltrace", "end write", e); }
                 finally { ReportStore.activeStall = null; }
             }
@@ -139,13 +148,6 @@ final class AnrMonitor {
             out.write((row + "\n").getBytes(StandardCharsets.UTF_8));
             out.getFD().sync();
         }
-    }
-
-    private static void trim(File dir, String suffix, int keep) {
-        File[] files = dir.listFiles((d, name) -> name.endsWith(suffix));
-        if (files == null) return;
-        Arrays.sort(files, Comparator.comparingLong(File::lastModified).reversed());
-        for (int i = keep; i < files.length; ++i) files[i].delete();
     }
 
     private static class ExitHistory {
@@ -195,7 +197,7 @@ final class AnrMonitor {
                     }
                     if (!tmp.renameTo(meta)) throw new IOException("metadata rename");
                 }
-                trim(dir, ".trace", 12); trim(dir, ".json", 24);
+                ReportStore.trimExits(dir);
             } catch (Exception e) { Log.e("Stalltrace", "exit history", e); }
         }
     }

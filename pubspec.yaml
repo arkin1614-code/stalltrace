@@ -1,6 +1,6 @@
 name: stalltrace
 description: Capture foreground Android stalls in Flutter apps and symbolize native and Dart AOT stacks offline using build-matched debug symbols.
-version: 0.1.0-dev.2
+version: 0.1.0-dev.3
 repository: https://github.com/arkin1614-code/stalltrace
 issue_tracker: https://github.com/arkin1614-code/stalltrace/issues
 topics:

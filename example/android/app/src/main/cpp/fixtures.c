@@ -32,3 +32,8 @@ Java_dev_stalltrace_stalltrace_1example_MainActivity_reserveTestSignal(JNIEnv *e
     sigemptyset(&own.sa_mask);
     return sigaction(sig, &own, NULL) == 0;
 }
+
+#include <android/log.h>
+__attribute__((visibility("default"))) void fixture_phase_mark(void) {
+    __android_log_write(ANDROID_LOG_INFO, "AnrLab", "switch to native");
+}

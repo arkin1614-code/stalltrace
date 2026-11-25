@@ -22,6 +22,11 @@ public class ReportStoreTest {
     }
     @After public void resetActive() { ReportStore.activeStall = null; }
 
+    @Test public void preservesNonAddressLinkRegisterBits() {
+        assertEquals(-1L,KernelStack.hex("ffffffffffffffff"));
+        assertEquals(0x123456789abL,KernelStack.hex("123456789ab"));
+    }
+
     @Test public void listsLegacySegmentsAndConfirmedExits() throws Exception {
         write(STALL + ".jsonl", "{}\n"); write(STALL + "-tail0.jsonl", "{}\n");
         write(EXIT + ".json", "{\"reasonAnr\":true}"); write(EXIT + ".trace", "trace");
@@ -63,5 +68,21 @@ public class ReportStoreTest {
         assertTrue(ReportStore.delete(temp.getRoot(), EXIT));
         assertTrue(ReportStore.list(temp.getRoot()).isEmpty());
         assertTrue(ReportStore.marker(temp.getRoot(), EXIT).exists());
+    }
+
+    @Test public void trimRetainsOrEvictsEverySegmentTogether() throws Exception {
+        for (String suffix : new String[]{".jsonl", "-tail0.jsonl", "-tail1.jsonl"})
+            assertTrue(write(STALL+suffix, "{}").setLastModified(1000));
+        for (int i=0; i<24; i++)
+            assertTrue(write(UUID.randomUUID()+"-1.jsonl","{}").setLastModified(2000+i*1000));
+        ReportStore.activeStall = STALL;
+        ReportStore.trimStalls(temp.getRoot());
+        assertTrue(new File(temp.getRoot(),STALL+".jsonl").isFile());
+        assertEquals(24,ReportStore.list(temp.getRoot()).size());
+        ReportStore.activeStall = null;
+        write(UUID.randomUUID()+"-1.jsonl","{}");
+        ReportStore.trimStalls(temp.getRoot());
+        for (String suffix : new String[]{".jsonl","-tail0.jsonl","-tail1.jsonl"})
+            assertFalse(new File(temp.getRoot(),STALL+suffix).exists());
     }
 }
