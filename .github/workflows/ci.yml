@@ -28,7 +28,8 @@ jobs:
           flutter test --no-pub
           (cd example && flutter test --no-pub)
       - name: Install Android build tools
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358' 'cmake;3.22.1'
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358' 'cmake;3.22.1'
       - name: Build the ARM64 release consumer
         working-directory: example
         run: flutter build apk --no-pub --release --obfuscate --target-platform android-arm64 --split-debug-info=build/symbols
