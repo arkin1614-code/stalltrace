@@ -1,4 +1,4 @@
-"""Exercise the three fixtures with real input on a dedicated Android emulator."""
+"""Exercise the fixtures with real input on a selected, dedicated Android test device."""
 import argparse
 import json
 from pathlib import Path
@@ -18,11 +18,11 @@ def main():
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--ffi-input-delay", type=float, default=0,
                     help="seconds before the second touch (0..8) in the FFI fixture")
+    ap.add_argument("--check-interrupted", action="store_true",
+                    help="also terminate one example process during a recorded Dart stall")
     args = ap.parse_args()
     if not 0 <= args.ffi_input_delay <= 8:
         ap.error("--ffi-input-delay must be between 0 and 8")
-    if not re.fullmatch(r"emulator-\d+", args.serial):
-        ap.error("select a dedicated emulator for the input-injection experiment")
     args.out.mkdir(parents=True, exist_ok=False)
 
     def adb(*cmd, timeout=30):
@@ -82,12 +82,14 @@ def main():
                     matches.append(line)
         return matches
 
-    args.out.joinpath("device.json").write_text(json.dumps({
+    device = {
         key: adb("shell", "getprop", prop) for key, prop in (
             ("fingerprint", "ro.build.fingerprint"), ("api", "ro.build.version.sdk"),
-            ("abi", "ro.product.cpu.abi"))}, indent=2))
+            ("abi", "ro.product.cpu.abi"))}
+    device["suiteVersion"] = 2
+    args.out.joinpath("device.json").write_text(json.dumps(device, indent=2))
     cases = []
-    for name in ("Short stall", "Dart CPU", "Native FFI"):
+    for name in ("Short stall", "Dart CPU", "Native FFI", "Native only"):
         adb("shell", "am", "force-stop", PKG)
         pid = launch()
         start = now()
@@ -97,7 +99,16 @@ def main():
         # A second touch is delivered to the already blocked, focused window.
         if name == "Native FFI":
             time.sleep(args.ffi_input_delay)
-        adb("shell", "input", "tap", "100", "240")
+        if int(device["api"]) < 30:
+            # Older "input" waits for delivery. Queue another focused event
+            # while the first injector is still waiting on the frozen window.
+            with subprocess.Popen([args.adb, "-s", args.serial, "shell", "input",
+                                   "tap", "100", "240"]) as pending_touch:
+                time.sleep(0.8)
+                adb("shell", "input", "keyevent", "KEYCODE_Q")
+                pending_touch.wait(timeout=25)
+        else:
+            adb("shell", "input", "tap", "100", "240")
         end = wait_mark(pid, "end " + name, since, 28)
         until = float(end.split()[0])
         evidence = events(pid, since, until)
@@ -105,6 +116,20 @@ def main():
         cases.append(case)
         args.out.joinpath("cases.json").write_text(json.dumps(cases, indent=2) + "\n")
         print(name, pid, "system ANRs", len(evidence), flush=True)
+    if args.check_interrupted:
+        adb("shell", "am", "force-stop", PKG)
+        pid = launch()
+        start = now()
+        tap_label("Dart CPU")
+        begin = wait_mark(pid, "begin Dart CPU", start, 6)
+        # Allow two watchdog samples to sync, then stop while the Dart loop is active.
+        time.sleep(4.5)
+        stopped = now()
+        adb("shell", "am", "force-stop", PKG)
+        if mark(pid, "end Dart CPU", start):
+            raise RuntimeError("interruption fixture already returned")
+        args.out.joinpath("interrupted.json").write_text(json.dumps({
+            "pid": pid, "begin": begin, "stoppedWall": stopped}, indent=2))
     # The probes were allowed to recover. A subsequent explicit stop is not
     # assumed to be an ANR exit. Collect the real historical reasons on restart.
     adb("shell", "am", "force-stop", PKG)

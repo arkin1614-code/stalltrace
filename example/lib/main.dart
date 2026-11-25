@@ -50,6 +50,7 @@ class Lab extends StatefulWidget {
 class _LabState extends State<Lab> {
   String status = 'Ready';
   bool busy = false;
+  bool collecting = true;
 
   Future<void> run(String name) async {
     if (busy) return;
@@ -58,17 +59,32 @@ class _LabState extends State<Lab> {
       status = name;
     });
     try {
-      if (name == 'Export') {
-        status = (await channel.invokeMethod<String>(
-          'export',
-          widget.session.reportsDirectory,
-        ))!;
+      if (name == 'Pause sampling' || name == 'Resume sampling') {
+        if (collecting) {
+          await Stalltrace.stop();
+        } else {
+          await Stalltrace.start();
+        }
+        collecting = !collecting;
+        status = 'Ready';
+      } else if (name == 'Export') {
+        final reports = await Stalltrace.listReports();
+        status = (await channel.invokeMethod<String>('export', {
+          'directory': widget.session.reportsDirectory,
+          'files': [for (final report in reports) ...report.files],
+        }))!;
         await channel.invokeMethod<void>('mark', 'exported $status');
       } else {
         await channel.invokeMethod<void>(
           'mark',
           'begin $name dartTid=${_tid()}',
         );
+        if (name == 'Native only') {
+          await channel.invokeMethod<void>('platformWait');
+          await channel.invokeMethod<void>('mark', 'end $name');
+          status = 'Ready';
+          return;
+        }
         final value = name == 'Native FFI'
             ? fixtureDartFfiCaller(18000)
             : fixtureDartCaller(name == 'Short stall' ? 2300 : 18000);
@@ -94,8 +110,10 @@ class _LabState extends State<Lab> {
           for (final name in [
             'Dart CPU',
             'Native FFI',
+            'Native only',
             'Short stall',
             'Export',
+            collecting ? 'Pause sampling' : 'Resume sampling',
           ])
             Padding(
               padding: const EdgeInsets.all(6),

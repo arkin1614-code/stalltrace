@@ -5,9 +5,7 @@ import 'package:stalltrace/stalltrace.dart';
 import 'package:stalltrace_example/main.dart';
 
 void main() {
-  testWidgets('offers the three reproducible workloads and export', (
-    tester,
-  ) async {
+  testWidgets('offers all workloads, export and pause', (tester) async {
     const channel = MethodChannel('dev.stalltrace/collector');
     final messenger = tester.binding.defaultBinaryMessenger;
     messenger.setMockMethodCallHandler(
@@ -20,7 +18,14 @@ void main() {
     addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
     final session = await Stalltrace.start();
     await tester.pumpWidget(MaterialApp(home: Lab(session: session)));
-    for (final label in ['Dart CPU', 'Native FFI', 'Short stall', 'Export']) {
+    for (final label in [
+      'Dart CPU',
+      'Native FFI',
+      'Native only',
+      'Short stall',
+      'Export',
+      'Pause sampling',
+    ]) {
       expect(find.widgetWithText(FilledButton, label), findsOneWidget);
     }
   });

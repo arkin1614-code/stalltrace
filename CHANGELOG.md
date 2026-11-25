@@ -2,7 +2,8 @@
 
 * Added typed report discovery and deletion, including rotated samples and suppression of deleted Android exit records.
 * Added a version field to new persisted records and Android report-store regression tests.
-* Added CI for static checks, Flutter tests, an obfuscated ARM64 example build and package validation.
+* Added CI for static checks, Flutter tests, native report-store tests, an obfuscated ARM64 example build and package validation.
+* Added a native-only JNI workload, an interrupted-write device check and a lifecycle integration test for occupied signals.
 
 ## 0.1.0-dev.1
 
