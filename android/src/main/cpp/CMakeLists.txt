@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22)
+project(stalltrace C)
+add_library(stalltrace SHARED sampler.c)
+target_compile_features(stalltrace PRIVATE c_std_11)
+target_compile_options(stalltrace PRIVATE -g -fno-omit-frame-pointer -Wall -Wextra -Werror)
+target_link_libraries(stalltrace PRIVATE dl)
