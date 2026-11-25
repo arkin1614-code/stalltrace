@@ -102,8 +102,9 @@ abstract final class Stalltrace {
   /// Lists stored reports without starting the collector. The list is a snapshot.
   static Future<List<StalltraceReport>> listReports() async {
     final rows = await _channel.invokeListMethod<Object?>('listReports');
-    if (rows == null)
+    if (rows == null) {
       throw const FormatException('Missing Stalltrace report list');
+    }
     return List.unmodifiable(rows.map(StalltraceReport._decode));
   }
 
