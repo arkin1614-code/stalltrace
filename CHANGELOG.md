@@ -1,3 +1,8 @@
+## 0.1.0-dev.4
+
+* Check the two neighboring samples against the primary Android dump when selecting a live stack. Expose frame-supported and time-only selection through the Dart API.
+* Add configurable two-phase workloads, OEM dialog handling, resuming interrupted test runs and an opt-in 20-minute foreground idle comparison to the example.
+
 ## 0.1.0-dev.3
 
 * Persist raw ARM64 registers (PC and LR), return addresses and their executable mappings before resolving build-matched ELF frames. Sampling works during a blocked dynamic library constructor.

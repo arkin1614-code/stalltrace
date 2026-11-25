@@ -28,6 +28,9 @@ enum StalltraceReportKind {
 /// Result of matching a foreground stall to an Android input-ANR dump.
 enum StalltraceTraceAssociation { none, matched, ambiguous }
 
+/// Evidence used to choose a live sample adjacent to the Android dump.
+enum StalltraceSampleSelection { matchingFrames, nearestTime }
+
 /// A snapshot of one report's metadata. File names are relative to the session directory.
 final class StalltraceReport {
   const StalltraceReport._(
@@ -41,6 +44,7 @@ final class StalltraceReport {
     this.traceWallMs,
     this.sampleDeltaMs,
     this.sampleMonoNs,
+    this.sampleSelection,
   );
 
   /// Opaque identifier accepted by [Stalltrace.deleteReport].
@@ -68,11 +72,15 @@ final class StalltraceReport {
   /// Wall-clock time of the system dump in milliseconds since the Unix epoch.
   final int? traceWallMs;
 
-  /// Signed difference between nearest capture and dump, in milliseconds.
+  /// Signed difference between selected capture and dump, in milliseconds.
   final int? sampleDeltaMs;
 
-  /// Monotonic timestamp identifying that exact native sample in the JSONL.
+  /// Monotonic timestamp identifying the selected native sample in the JSONL.
   final int? sampleMonoNs;
+
+  /// Matching frames require the same leaf module and two consecutive saved call sites.
+  /// A time-only match may span a change in workload. Older plugins omit this field.
+  final StalltraceSampleSelection? sampleSelection;
 
   static StalltraceReport _decode(Object? value) {
     if (value case {
@@ -112,6 +120,12 @@ final class StalltraceReport {
           value['traceWallMs'] as int?,
           value['sampleDeltaMs'] as int?,
           value['sampleMonoNs'] as int?,
+          switch (value['sampleSelection']) {
+            'matchingFrames' => StalltraceSampleSelection.matchingFrames,
+            'nearestTime' => StalltraceSampleSelection.nearestTime,
+            null => null,
+            _ => throw const FormatException('Unknown sample selection'),
+          },
         );
       }
     }

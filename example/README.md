@@ -31,6 +31,10 @@ Switch early and Switch late each run Dart for 11 seconds, then enter synchronou
 
 With `--check-interrupted`, the runner also kills the example 36 seconds into a slow native constructor. Acceptance requires source-located constructor samples persisted in two report segments and a preceding raw record for each. Legacy devices supply libc from `/system/lib64` and newer releases can use the runtime APEX. Each trial installs/runs only the example and stops its processes. Keep a physical test device unlocked, with USB debugging authorized.
 
+On devices with a 10-second input dispatch timeout, build with `--dart-define=STALLTRACE_SWITCH_DART_MS=18000 --dart-define=STALLTRACE_SWITCH_FFI_MS=18000` and pass `--ffi-input-delay 1 --settle-anr-dialogs` to the runner. The latter waits for the recovered example’s own ANR dialog and closes it before the next launch. Keep the symbols from that exact APK. If automation is interrupted before export, `--resume` continues the saved prefix using the same device and installed build. Keep each repetition in its own output directory.
+
+For the idle comparison, add `--measure-idle` to the last run. Keep the example foregrounded and connected to USB. The example keeps its window awake and measures the same process for 10 minutes with sampling paused, followed by 10 minutes with sampling enabled. Each leg has a five-second settling period. The two local JSON files include process CPU time, main-thread CPU time, kernel scheduler wakeups of the main and watchdog threads when available, and the peak observed logical report-file bytes. An activity pause or a gap between uptime and elapsed time invalidates the leg. The baseline includes an initialized, paused collector. Boot costs, device suspend wakeups and battery discharge require separate measurements.
+
 To exercise a conflicting signal owner, repeated start/stop and deletion through the public Dart API, run on a dedicated ARM64 device:
 
 ```sh

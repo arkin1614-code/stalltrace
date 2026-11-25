@@ -59,7 +59,29 @@ class _LabState extends State<Lab> {
       status = name;
     });
     try {
-      if (name == 'Pause sampling' || name == 'Resume sampling') {
+      if (name == 'Measure overhead') {
+        final wasCollecting = collecting;
+        try {
+          for (final phase in ['paused', 'enabled']) {
+            if (phase == 'paused') {
+              await Stalltrace.stop();
+            } else {
+              await Stalltrace.start();
+            }
+            await channel.invokeMethod<void>('measureIdle', phase);
+          }
+          status = 'Idle measurement complete';
+        } catch (e) {
+          await channel.invokeMethod<void>('mark', 'idle failed');
+          status = 'Idle measurement failed';
+        } finally {
+          if (wasCollecting) {
+            await Stalltrace.start();
+          } else {
+            await Stalltrace.stop();
+          }
+        }
+      } else if (name == 'Pause sampling' || name == 'Resume sampling') {
         if (collecting) {
           await Stalltrace.stop();
         } else {
@@ -77,6 +99,7 @@ class _LabState extends State<Lab> {
                 'id': r.id,
                 'kind': r.kind.name,
                 'association': r.traceAssociation.name,
+                'sampleSelection': r.sampleSelection?.name,
                 'exitReportId': r.exitReportId,
                 'sampleMonoNs': r.sampleMonoNs,
                 'sampleDeltaMs': r.sampleDeltaMs,
@@ -92,12 +115,22 @@ class _LabState extends State<Lab> {
           'begin $name dartTid=${_tid()}',
         );
         if (name.startsWith('Switch ')) {
-          fixtureDartCaller(11000);
+          fixtureDartCaller(
+            const int.fromEnvironment(
+              'STALLTRACE_SWITCH_DART_MS',
+              defaultValue: 11000,
+            ),
+          );
           DynamicLibrary.open('libstalltrace_fixture.so')
               .lookupFunction<Void Function(), void Function()>(
                 'fixture_phase_mark',
               )();
-          fixtureDartFfiCaller(13000);
+          fixtureDartFfiCaller(
+            const int.fromEnvironment(
+              'STALLTRACE_SWITCH_FFI_MS',
+              defaultValue: 13000,
+            ),
+          );
           await channel.invokeMethod<void>('mark', 'end $name');
           status = 'Ready';
           return;
@@ -146,6 +179,7 @@ class _LabState extends State<Lab> {
               'Switch late',
               'Slow load',
               'Export',
+              'Measure overhead',
               collecting ? 'Pause sampling' : 'Resume sampling',
             ])
               Padding(

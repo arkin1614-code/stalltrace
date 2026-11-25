@@ -11,6 +11,18 @@ import io.flutter.plugin.common.MethodChannel;
 import java.io.*;
 
 public class MainActivity extends FlutterActivity {
+    private volatile int pauses;
+
+    @Override protected void onPause() {
+        pauses++;
+        super.onPause();
+    }
+
+    @Override protected void onCreate(android.os.Bundle state) {
+        super.onCreate(state);
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
     private static native void waitOnPlatform();
     private static native boolean reserveTestSignal();
     @Override public void configureFlutterEngine(FlutterEngine engine) {
@@ -20,6 +32,19 @@ public class MainActivity extends FlutterActivity {
                 if (call.method.equals("mark")) {
                     Log.i("AnrLab", String.valueOf(call.arguments));
                     result.success(null);
+                } else if (call.method.equals("measureIdle")) {
+                    final int initialPauses = pauses;
+                    final String phase = (String) call.arguments;
+                    new Thread(() -> {
+                        try {
+                            org.json.JSONObject metrics = IdleMeasurement.measure(
+                                new File(getNoBackupFilesDir(), "stalltrace"));
+                            metrics.put("valid", pauses == initialPauses &&
+                                Math.abs(metrics.getLong("elapsedMs")-metrics.getLong("uptimeMs")) < 1000);
+                            Log.i("AnrLab", "idle " + phase + " " + metrics);
+                            result.success(null);
+                        } catch (Exception e) { result.error("measurement_failed", e.toString(), null); }
+                    }, "lab-idle-measure").start();
                 } else if (call.method.equals("reserveTestSignal")) {
                     System.loadLibrary("stalltrace_fixture");
                     result.success(reserveTestSignal());

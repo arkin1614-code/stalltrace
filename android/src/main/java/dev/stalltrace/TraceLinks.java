@@ -18,10 +18,78 @@ final class TraceLinks {
         String id, process;
         int pid;
         long wall;
+        List<String> prefix = Collections.emptyList();
+    }
+
+    // Two consecutive saved return PCs guard against shared libc waits and generic event-loop frames.
+    private static final int MAX_NEIGHBOR_MS = 2500;
+    private static final Pattern NATIVE =
+        Pattern.compile("native: #(\\d+) pc ([0-9a-fA-F]+)\\s+.*?\\(BuildId: ([0-9a-fA-F]+)\\)");
+    private static String frameKey(String id, String pc) {
+        return id.toLowerCase(Locale.ROOT) + "/" + pc.toLowerCase(Locale.ROOT).replaceFirst("^0+(?!$)", "");
+    }
+    private static List<String> capturePrefix(String sample) {
+        String[] lines = sample.split("\\n", 7);
+        List<String> frames = new ArrayList<>(3);
+        for (int i = 1; i < lines.length && frames.size() < 3; i++) {
+            String[] words = lines[i].split(" ");
+            if (words.length != 4)
+                break;
+            if (words[0].equals("lr"))
+                continue; // LR may be scratch until verified offline with CFI.
+            String kind = frames.isEmpty() ? "pc" : "call";
+            if (!words[0].equals(kind) || words[2].equals("-"))
+                break;
+            frames.add(frameKey(words[2], words[3]));
+        }
+        return frames;
+    }
+    private static List<String> primaryPrefix(BufferedReader in, int pid) throws IOException {
+        boolean main = false, target = false;
+        List<String> frames = new ArrayList<>(4);
+        Pattern tid = Pattern.compile("\\bsysTid=" + pid + "\\b");
+        String line;
+        while ((line = in.readLine()) != null) {
+            if (line.startsWith("----- "))
+                break;
+            if (line.startsWith("\"")) {
+                if (main)
+                    break;
+                main = line.startsWith("\"main\"");
+                continue;
+            }
+            if (!main)
+                continue;
+            if (line.trim().isEmpty())
+                break;
+            if (tid.matcher(line).find())
+                target = true;
+            if (!line.contains("native: #"))
+                continue;
+            Matcher m = NATIVE.matcher(line);
+            if (!target || !m.find() || Integer.parseInt(m.group(1)) != frames.size())
+                break;
+            frames.add(frameKey(m.group(3), m.group(2)));
+            if (frames.size() == 4)
+                break;
+        }
+        return frames;
+    }
+    private static boolean matchesFrames(List<String> sample, List<String> dump) {
+        if (sample == null || sample.size() < 3 || dump.size() < 3)
+            return false;
+        if (!sample.get(0).split("/")[0].equals(dump.get(0).split("/")[0]))
+            return false;
+        for (int i = 1; i + 1 < dump.size(); i++) {
+            if (sample.get(1).equals(dump.get(i)) && sample.get(2).equals(dump.get(i + 1)))
+                return true;
+        }
+        return false;
     }
     private static final class Stall {
         final Map<String, Object> row;
         final NavigableMap<Long, Long> samples = new TreeMap<>(); // wall milliseconds -> capture monotonic ns
+        final Map<Long, List<String>> prefixes = new HashMap<>();
         final List<Dump> dumps = new ArrayList<>();
         String process = "";
         int pid;
@@ -78,6 +146,8 @@ final class TraceLinks {
                             continue;
                         long at = stamp - (endNs - mono) / 1000000;
                         samples.put(at, mono);
+                        if (type.equals("stall_sample"))
+                            prefixes.put(mono, capturePrefix(nativeText));
                         end = Math.max(end, at);
                     } catch (NumberFormatException ignored) {
                     }
@@ -128,6 +198,7 @@ final class TraceLinks {
                 if (date == null || date.getTime() > exit.optLong("exitWallMs"))
                     return null;
                 d.wall = date.getTime();
+                d.prefix = primaryPrefix(in, d.pid);
                 return d;
             }
         } catch (JSONException | NumberFormatException malformed) {
@@ -179,9 +250,21 @@ final class TraceLinks {
             }
             Dump d = s.dumps.get(0);
             Long before = s.samples.floorKey(d.wall), after = s.samples.ceilingKey(d.wall);
-            long at = before == null                                 ? after
-                : after == null || d.wall - before <= after - d.wall ? before
-                                                                     : after;
+            long at = before != null ? before : after;
+            if (after != null && Math.abs(after - d.wall) < Math.abs(at - d.wall))
+                at = after;
+            Long supported = null;
+            for (Long candidate : Arrays.asList(before, after)) {
+                if (candidate == null || Math.abs(candidate - d.wall) > MAX_NEIGHBOR_MS)
+                    continue;
+                if (!matchesFrames(s.prefixes.get(s.samples.get(candidate)), d.prefix))
+                    continue;
+                if (supported == null || Math.abs(candidate - d.wall) < Math.abs(supported - d.wall))
+                    supported = candidate;
+            }
+            if (supported != null)
+                at = supported;
+            s.row.put("sampleSelection", supported != null ? "matchingFrames" : "nearestTime");
             s.row.put("traceAssociation", "matched");
             s.row.put("exitReportId", d.id);
             s.row.put("traceWallMs", d.wall);

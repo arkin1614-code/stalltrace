@@ -33,7 +33,8 @@ final reports = await Stalltrace.listReports();
 for (final report in reports) {
   if (report.traceAssociation == StalltraceTraceAssociation.matched) {
     // report.exitReportId identifies the Android record carrying the dump.
-    // report.sampleMonoNs selects the closest captured stack in this stall.
+    // report.sampleMonoNs identifies the selected native sample.
+    // report.sampleSelection describes the stack evidence or time-only fallback.
     // report.sampleDeltaMs is negative when the sample preceded the dump.
   }
 }
@@ -44,6 +45,8 @@ for (final report in reports) {
 Listing returns opaque IDs, the evidence kind, active state and relative file names. A stall includes its rotated segments; an exit record includes its available trace. Deletion is idempotent and can return `report_active` during capture. [Data and deletion semantics](doc/PRIVACY.md)
 
 The association uses the primary input-timeout dump's PID, process name and millisecond timestamp, the observed stall interval and its native sample times. `ambiguous` means multiple matches are possible. `none` covers unavailable evidence, including older stall records without a process name, unsupported trace formats and clock changes. `confirmedAnrExit` describes Android's recorded cause of death. A recovered input ANR can have a matched trace on a subsequent exit with a different cause. The signed delta measures distance to the dump time.
+
+For matched dumps, the collector compares the immediately preceding and following samples. Within 2.5 seconds of the dump, a sample with the same leaf module Build ID and two consecutive matching saved call sites takes precedence. The sample exposes `matchingFrames` when this evidence is available and `nearestTime` when only proximity supports selection. A time-only sample can fall on the other side of a workload transition. The split debug files still need to match the captured ELF Build IDs for offline symbolization.
 
 ## Read a stack
 

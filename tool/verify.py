@@ -106,6 +106,13 @@ def verify_case(case, rows, symbols, raw, api):
         if system:
             passed = passed and not any(f["module"] == "libapp.so" for f in system["stack"])
     if switched is not None:
+        if "injectedWall" in case:
+            expected_touch = False
+            for event in case["am_anr"]:
+                wait = re.search(r"Waited (\d+)ms for (?:MotionEvent|KeyEvent)", event)
+                if wait and float(event.split()[0]) - case["injectedWall"] >= int(wait[1])/1000 - 0.5:
+                    expected_touch = True
+            passed = passed and expected_touch
         passed = (passed and len(times) == 1 and phase(times[0]) == expected and
                   all(any(phase(o["wall"]) == frames for o in hits) for frames in (DART, FFI)) and
                   any(abs(o["wall"] - times[0]) <= 1.5 and phase(o["wall"]) == expected for o in hits))

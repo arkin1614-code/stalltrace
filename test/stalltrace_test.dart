@@ -50,6 +50,7 @@ void main() {
             'exitReportId': 'exit',
             'traceWallMs': 2000,
             'sampleDeltaMs': -50,
+            'sampleSelection': 'matchingFrames',
             'sampleMonoNs': 12345,
           },
         ],
@@ -59,6 +60,7 @@ void main() {
       expect(report.confirmedAnrExit, isFalse);
       expect(report.exitReportId, 'exit');
       expect(report.sampleDeltaMs, -50);
+      expect(report.sampleSelection, StalltraceSampleSelection.matchingFrames);
       expect(report.sampleMonoNs, 12345);
     },
   );

@@ -69,6 +69,36 @@ public class TraceLinksTest {
         assertEquals(5500000000L, linked.get("sampleMonoNs"));
     }
     @Test
+    public void selectsEarlierDartStackAcrossNativeTransition() throws Exception {
+        stall(1, 0, 7000);
+        File samples = new File(folder.getRoot(), PREFIX + "1.jsonl");
+        JSONObject row = new JSONObject(Files.readAllLines(samples.toPath()).get(0));
+        StringBuilder data = new StringBuilder();
+        long[] offsets = {2731, 4821}; // 1369 ms before vs. 721 ms after the dump
+        String[] stacks = {
+            "pc libapp.so aa 37\nlr libapp.so aa ff\ncall libapp.so aa 22\ncall libapp.so aa 33",
+            "pc libc.so cc 44\ncall libfixture.so dd 55\ncall libapp.so aa 66"};
+        for (int i = 0; i < offsets.length; i++) {
+            long mono = (offsets[i] + 1000) * 1000000;
+            row.put("sampleWallMs", T + offsets[i])
+                .put("sampleStartMonoNs", mono - 1)
+                .put("sampleEndMonoNs", mono)
+                .put("native", mono + " 7 0\n" + stacks[i] + "\n");
+            data.append(row).append('\n');
+        }
+        write(samples.getName(), data.toString());
+        dump("app");
+        String main = "\"main\" prio=5\n  | sysTid=7\n  native: #00 pc 0038 a (BuildId: aa)\n"
+            + "  native: #01 pc 0022 a (BuildId: aa)\n  native: #02 pc 0033 a (BuildId: aa)\n\n";
+        Files.write(new File(folder.getRoot(), EXIT + ".trace").toPath(),
+            main.getBytes(StandardCharsets.UTF_8), java.nio.file.StandardOpenOption.APPEND);
+        assertEquals("matchingFrames", row(1).get("sampleSelection"));
+        assertEquals(-1369L, row(1).get("sampleDeltaMs"));
+        dump("app");
+        assertEquals("nearestTime", row(1).get("sampleSelection"));
+        assertEquals(721L, row(1).get("sampleDeltaMs"));
+    }
+    @Test
     public void overlapsStayAmbiguousAndProcessMismatchStaysUnlinked() throws Exception {
         stall(1, 0, 6000);
         stall(2, 3000, 6000);
