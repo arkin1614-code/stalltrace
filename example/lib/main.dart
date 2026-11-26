@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:stalltrace/stalltrace.dart';
 
+import 'anr_scenarios.dart';
+
 void main() => runApp(const MaterialApp(home: DiagnosticsPage()));
 
 class DiagnosticsPage extends StatefulWidget {
@@ -66,6 +68,24 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
             }),
             value: _session != null,
             onChanged: _busy ? null : _setEnabled,
+          ),
+          ListTile(
+            title: const Text('ANR test scenarios'),
+            subtitle: _session == null
+                ? const Text('Enable collection to run a scenario.')
+                : null,
+            trailing: const Icon(Icons.chevron_right),
+            enabled: _session != null && !_busy,
+            onTap: _session == null || _busy
+                ? null
+                : () async {
+                    await Navigator.of(context).push<void>(
+                      MaterialPageRoute(
+                        builder: (_) => const AnrScenariosPage(),
+                      ),
+                    );
+                    if (mounted) await _refresh();
+                  },
           ),
           const Divider(),
           ListTile(
