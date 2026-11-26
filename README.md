@@ -63,6 +63,8 @@ The input may be a JSONL snapshot file or an Android ANR trace. `DART_SYMBOLS` p
 
 A library can be mapped while a sample is being taken. If the executable mapping cannot be verified both before and after capture, the raw record retains the address and the decoded frame is unknown. Other verified frames in that sample remain usable.
 
+To inspect one incident, run `python3 tool/diagnose.py "$EXPORT_DIR" "$STALL_ID"` from the checkout. It reads the stall entry from the example’s exported catalog and reports the selected live sample alongside the primary Android dump when available. Add the matching ELF symbols, R8 mapping, application package and Dart source paths to see business frames and the owning thread for an explicitly recorded Java monitor wait. [Reproduction commands and device results (中文)](doc/BUSINESS_SCENARIOS.zh-CN.md)
+
 ## Android support
 
 | Capability | Development version |

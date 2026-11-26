@@ -27,11 +27,15 @@ public class MainActivity extends FlutterActivity {
     private static native boolean reserveTestSignal();
     @Override public void configureFlutterEngine(FlutterEngine engine) {
         super.configureFlutterEngine(engine);
+        InventoryStore inventory = new InventoryStore(this);
         new MethodChannel(engine.getDartExecutor().getBinaryMessenger(), "anr/lab")
             .setMethodCallHandler((call, result) -> {
                 if (call.method.equals("mark")) {
                     Log.i("AnrLab", String.valueOf(call.arguments));
                     result.success(null);
+                } else if (call.method.equals("inventoryEdit")) {
+                    inventory.contend(Boolean.TRUE.equals(call.argument("database")),
+                        Boolean.TRUE.equals(call.argument("onMain")), result);
                 } else if (call.method.equals("measureIdle")) {
                     final int initialPauses = pauses;
                     final String phase = (String) call.arguments;

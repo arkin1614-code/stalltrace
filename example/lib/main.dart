@@ -1,9 +1,9 @@
 import 'dart:ffi';
 
-import 'package:stalltrace/stalltrace.dart';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:stalltrace/stalltrace.dart';
+import 'package:stalltrace_example/business_scenarios.dart';
 
 const channel = MethodChannel('anr/lab');
 final _wait = DynamicLibrary.open('libstalltrace_fixture.so')
@@ -59,7 +59,16 @@ class _LabState extends State<Lab> {
       status = name;
     });
     try {
-      if (name == 'Measure overhead') {
+      if (const bool.fromEnvironment('STALLTRACE_BUSINESS_LAB') &&
+          businessLabels.contains(name)) {
+        await channel.invokeMethod<void>(
+          'mark',
+          'begin $name dartTid=${_tid()}',
+        );
+        final outcome = await runBusinessScenario(name, channel);
+        await channel.invokeMethod<void>('mark', 'end $name $outcome');
+        status = 'Ready';
+      } else if (name == 'Measure overhead') {
         final wasCollecting = collecting;
         try {
           for (final phase in ['paused', 'enabled']) {
@@ -170,18 +179,27 @@ class _LabState extends State<Lab> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            for (final name in [
-              'Dart CPU',
-              'Native FFI',
-              'Native only',
-              'Short stall',
-              'Switch early',
-              'Switch late',
-              'Slow load',
-              'Export',
-              'Measure overhead',
-              collecting ? 'Pause sampling' : 'Resume sampling',
-            ])
+            if (const bool.fromEnvironment('STALLTRACE_BUSINESS_LAB'))
+              TextButton(
+                onPressed: () =>
+                    channel.invokeMethod<void>('mark', 'probe received'),
+                child: const Text('Probe input'),
+              ),
+            for (final name
+                in const bool.fromEnvironment('STALLTRACE_BUSINESS_LAB')
+                    ? [...businessLabels, 'Export']
+                    : [
+                        'Dart CPU',
+                        'Native FFI',
+                        'Native only',
+                        'Short stall',
+                        'Switch early',
+                        'Switch late',
+                        'Slow load',
+                        'Export',
+                        'Measure overhead',
+                        collecting ? 'Pause sampling' : 'Resume sampling',
+                      ])
               Padding(
                 padding: const EdgeInsets.all(6),
                 child: FilledButton(

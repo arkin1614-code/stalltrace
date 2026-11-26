@@ -34,6 +34,9 @@ jobs:
       - name: Build the ARM64 release consumer
         working-directory: example
         run: flutter build apk --release --obfuscate --target-platform android-arm64 --split-debug-info=build/symbols
+      - name: Compile the opt-in business scenarios
+        working-directory: example
+        run: flutter build apk --release --no-pub --obfuscate --target-platform android-arm64 --split-debug-info=build/scenario-symbols --dart-define=STALLTRACE_BUSINESS_LAB=true
       - name: Test the Android report store
         working-directory: example/android
         run: ./gradlew :stalltrace:testDebugUnitTest

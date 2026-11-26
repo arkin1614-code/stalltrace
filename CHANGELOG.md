@@ -1,3 +1,8 @@
+## Unreleased
+
+* Add offline diagnosis of the selected live stack and primary input-ANR dump, including R8 retracing, application source frames and explicit ART monitor ownership.
+* Add paired SQLite, Java monitor and Dart JSON workloads with a device runner and evidence verifier.
+
 ## 0.1.0-dev.5
 
 * Associate a fatal input ANR dumped just after the final sample when the last open probe and primary system stack share matching frames. Both the sample-to-dump and dump-to-exit gaps must be within 2.5 seconds.
