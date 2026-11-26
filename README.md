@@ -50,7 +50,7 @@ For matched dumps, the collector examines the native samples immediately before 
 
 `matchingJavaSite` identifies the same positioned Java frame in the process package or an R8-mapped APK frame, with the same caller and immediate callee. The Java stack must immediately follow that native acquisition in the same segment, finish within 250 ms of it and still belong to a pending probe. Agreement in both stacks takes precedence, followed by a Java site match, a native match and finally `nearestTime`. The Java and native capture times are recorded separately.
 
-If Android terminates the process for an ANR, the dump can arrive after the last persisted sample. For the latest unfinished probe in that process, Stalltrace also checks whether the last sample matches the primary dump by frames. Both the sample-to-dump and dump-to-exit intervals must be within 2.5 seconds. A recovery marker, a newer probe, or missing frame evidence excludes that extension.
+If Android terminates the process for an ANR, the dump can arrive after the last persisted sample. For the latest unfinished probe in that process, Stalltrace also checks whether the last sample matches the primary dump by native frames or by its own adjacent, positioned Java call site. Both the sample-to-dump and dump-to-exit intervals must be within 2.5 seconds. A recovery marker, a newer probe, or missing frame evidence excludes that extension.
 
 ## Read a stack
 

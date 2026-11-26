@@ -33,7 +33,7 @@ final class TraceLinks {
         return id.toLowerCase(Locale.ROOT) + "/" + pc.toLowerCase(Locale.ROOT).replaceFirst("^0+(?!$)", "");
     }
     private static List<String> capturePrefix(String sample) {
-        String[] lines = sample.split("\\n", 7);
+        String[] lines = sample.split("\\n", MAX_NATIVE_FRAMES + 3);
         List<String> frames = new ArrayList<>();
         for (int i = 1; i < lines.length && frames.size() < MAX_NATIVE_FRAMES; i++) {
             String[] words = lines[i].split(" ");
@@ -141,6 +141,9 @@ final class TraceLinks {
             this.site = site;
             this.firstWall = firstWall;
             this.lastWall = lastWall;
+        }
+        boolean matches(Dump dump) {
+            return site.equals(dump.javaSite) && distance(dump.wall) <= MAX_NEIGHBOR_MS;
         }
         long distance(long wall) {
             return Math.max(Math.abs(firstWall - wall), Math.abs(lastWall - wall));
@@ -336,8 +339,10 @@ final class TraceLinks {
                         s.ended || s.samples.isEmpty())
                         continue;
                     Map.Entry<Long, Long> last = s.samples.lastEntry();
+                    JavaObservation java = s.javaSamples.get(last.getValue());
                     if (dump.wall - last.getKey() <= MAX_NEIGHBOR_MS &&
-                        nativeMatch(s.prefixes.get(last.getValue()), dump.prefix).calls >= 2)
+                        (nativeMatch(s.prefixes.get(last.getValue()), dump.prefix).calls >= 2 ||
+                         (java != null && java.matches(dump))))
                         candidates.add(s);
                 }
             }
@@ -370,7 +375,7 @@ final class TraceLinks {
                 NativeMatch nativeFrames = nativeMatch(s.prefixes.get(mono), d.prefix);
                 int rank = nativeFrames.calls >= 2 ? 1 : 0;
                 JavaObservation java = s.javaSamples.get(mono);
-                if (java != null && java.site.equals(d.javaSite) && java.distance(d.wall) <= MAX_NEIGHBOR_MS) {
+                if (java != null && java.matches(d)) {
                     rank += 2;
                     distance = java.distance(d.wall);
                 }

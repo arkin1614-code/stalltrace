@@ -108,8 +108,8 @@ public class TraceLinksTest {
             long mono = (1000 + at) * 1_000_000;
             String site = at == 2750 ? "aa" : "bb";
             sample.put("sampleWallMs", T + at).put("sampleStartMonoNs", mono - 10).put("sampleEndMonoNs", mono)
-                .put("native", mono + " 7 0\npc libc.so cc 0\ncall libffi.so dd 1\ncall libapp.so ee 2"
-                    + "\ncall libapp.so ee 3\ncall libapp.so ee " + site);
+                .put("native", mono + " 7 0\npc libc.so cc 0\nlr libffi.so dd ff\ncall libffi.so dd 1\ncall libapp.so ee 2"
+                    + "\ncall libapp.so ee 3\ncall libapp.so ee " + site + "\ncall libapp.so ee ee\ncall libapp.so ee ff");
             rows.append(sample).append('\n');
         }
         write(file.getName(), rows.toString());
@@ -122,7 +122,7 @@ public class TraceLinksTest {
         assertEquals("matchingFrames", row(1).get("sampleSelection"));
         assertEquals(-1350L, row(1).get("sampleDeltaMs"));
         // The nearer walk ended at that depth; it never observed a contradictory return address.
-        write(file.getName(), rows.toString().replace("\\ncall libapp.so ee bb", ""));
+        write(file.getName(), rows.toString().replace("\\ncall libapp.so ee bb\\ncall libapp.so ee ee\\ncall libapp.so ee ff", ""));
         assertEquals(650L, row(1).get("sampleDeltaMs"));
         // A deeper suffix cannot rescue a mismatch at the first two saved calls.
         write(file.getName(), rows.toString().replace("libffi.so dd 1","libffi.so ff 1"));
@@ -182,6 +182,24 @@ public class TraceLinksTest {
         String missing = "app.Work.run(Unknown Source)";
         javaNeighbors(missing, missing, CALLER, missing, true, 10, false);
         assertEquals("nearestTime", row(1).get("sampleSelection"));
+    }
+    @Test
+    public void fatalGapRequiresTheLastOpenSampleAndItsOwnPositionedJavaObservation() throws Exception {
+        javaNeighbors(FIRST, SECOND, CALLER, FIRST, true, 10, false);
+        File file = new File(folder.getRoot(), PREFIX + "1.jsonl");
+        List<String> lines = Files.readAllLines(file.toPath());
+        write(file.getName(), lines.get(0) + "\n" + lines.get(1) + "\n");
+        JSONObject meta = new JSONObject().put("process","app").put("pid",7)
+            .put("exitWallMs", T + 4500).put("reasonAnr",true);
+        write(EXIT + ".json", meta.toString());
+        assertEquals("matchingJavaSite", row(1).get("sampleSelection"));
+        write(EXIT + ".json", meta.put("reasonAnr",false).toString());
+        assertEquals("none", row(1).get("traceAssociation"));
+        write(EXIT + ".json", meta.put("reasonAnr",true).toString());
+        write(file.getName(), lines.get(0) + "\n" + lines.get(1).replace(FIRST, SECOND) + "\n");
+        assertEquals("none", row(1).get("traceAssociation"));
+        write(file.getName(), lines.get(0) + "\n" + lines.get(1) + "\n{\"type\":\"ack\"}\n");
+        assertEquals("none", row(1).get("traceAssociation"));
     }
     @Test
     public void fatalDumpJustAfterLastSampleNeedsOpenProbeAndMatchingFrames() throws Exception {
