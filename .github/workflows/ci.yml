@@ -20,25 +20,31 @@ jobs:
           flutter-version: '3.47.9'
           channel: stable
       - name: Resolve dependencies
-        run: flutter pub get
+        run: |
+          flutter pub get
+          (cd tool/anr_lab && flutter pub get)
       - name: Check Dart sources and tests
         run: |
-          dart format --output=none --set-exit-if-changed lib test example/lib example/test example/integration_test
+          dart format --output=none --set-exit-if-changed lib test example/lib example/test tool/anr_lab/lib tool/anr_lab/test tool/anr_lab/integration_test
           python3 -m unittest discover -s tool
           flutter analyze --no-pub
           flutter test --no-pub
           (cd example && flutter test --no-pub)
+          (cd tool/anr_lab && flutter test --no-pub)
       - name: Install Android build tools
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358' 'cmake;3.22.1'
-      - name: Build the ARM64 release consumer
+      - name: Build the usage example
         working-directory: example
+        run: flutter build apk --release --no-pub --target-platform android-arm64
+      - name: Build the ARM64 acceptance lab
+        working-directory: tool/anr_lab
         run: flutter build apk --release --obfuscate --target-platform android-arm64 --split-debug-info=build/symbols
       - name: Compile the opt-in business scenarios
-        working-directory: example
+        working-directory: tool/anr_lab
         run: flutter build apk --release --no-pub --obfuscate --target-platform android-arm64 --split-debug-info=build/scenario-symbols --dart-define=STALLTRACE_BUSINESS_LAB=true
       - name: Test the Android report store
-        working-directory: example/android
+        working-directory: tool/anr_lab/android
         run: ./gradlew :stalltrace:testDebugUnitTest
       - name: Check the package archive
         run: dart pub publish --dry-run

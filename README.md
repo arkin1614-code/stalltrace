@@ -4,7 +4,7 @@ Stalltrace captures a Flutter Android app's main-thread stack while its foregrou
 
 ## Use the development package
 
-Add a path dependency pointing to this checkout. The example app uses the same public API.
+Add a path dependency pointing to this checkout. The [Android example](example/README.md) shows how to enable collection from a Flutter page and read saved reports.
 
 ```yaml
 dependencies:
@@ -24,7 +24,7 @@ Future<StalltraceSession> enableDiagnostics() async {
 
 Call this from the root isolate of your Android app after opting in to diagnostics. The session exposes `nativeSamplingAvailable` and `reportsDirectory`. Repeated calls reuse the collector. Call `await Stalltrace.stop()` to suspend this engine's sampling. An in-progress write can finish, and the native signal reservation lasts for the process lifetime.
 
-The plugin writes to the app's private no-backup directory. A `.jsonl` contains timestamped stall snapshots and Java frames. An `exit-*.json` describes a historical process exit and may refer to a separate `.trace`. History collection runs asynchronously after startup. A recovered ANR may have a trace attached to a later exit for a different reason. The host controls retention beyond the plugin's rolling limits and any export or upload. The example exports copies only when its Export button is used.
+The plugin writes to the app's private no-backup directory. A `.jsonl` contains timestamped stall snapshots and Java frames. An `exit-*.json` describes a historical process exit and may refer to a separate `.trace`. History collection runs asynchronously after startup. A recovered ANR may have a trace attached to a later exit for a different reason. The host controls retention beyond the plugin's rolling limits and any export or upload. The acceptance lab can export copies for offline verification.
 
 ## Manage local reports
 
@@ -65,7 +65,7 @@ The input may be a JSONL snapshot file or an Android ANR trace. `DART_SYMBOLS` p
 
 A library can be mapped while a sample is being taken. If the executable mapping cannot be verified both before and after capture, the raw record retains the address and the decoded frame is unknown. Other verified frames in that sample remain usable.
 
-To inspect one incident, run `python3 tool/diagnose.py "$EXPORT_DIR" "$STALL_ID"` from the checkout. It reads the stall entry from the example’s exported catalog and reports the selected live sample alongside the primary Android dump when available. Add the matching ELF symbols, R8 mapping, application package and Dart source paths to see business frames and the owning thread for an explicitly recorded Java monitor wait. [Reproduction commands and device results (中文)](doc/BUSINESS_SCENARIOS.zh-CN.md)
+To inspect one incident, run `python3 tool/diagnose.py "$EXPORT_DIR" "$STALL_ID"` from the checkout. It reads the stall entry from the acceptance lab’s exported catalog and reports the selected live sample alongside the primary Android dump when available. Add the matching ELF symbols, R8 mapping, application package and Dart source paths to see business frames and the owning thread for an explicitly recorded Java monitor wait. [Reproduction commands and device results (中文)](doc/BUSINESS_SCENARIOS.zh-CN.md)
 
 With `--java-package` or `--dart-file`, read `sourceLines.java.atDump` or `sourceLines.dart.atDump` for the positioned application frame in the primary Android dump. `selected` is the on-device sample’s line. `corroboratingCaptureMonoNs` identifies the nearby sample whose business function, source file and line agree after symbolization. Inspect `neighbors` for changes across the dump. A missing system line stays null even if two samples agree. The reported position applies to the system snapshot and can differ from the work running when the input first timed out.
 
@@ -84,4 +84,4 @@ This version targets foreground input stalls. Split engine threads, background A
 
 The same obfuscated ARM64 release APK (dev.5) associated all 50 input ANRs with a frame-matched live sample in five test rounds each on a Samsung SM-F9660 (Android 17) and a OnePlus PGP110 (Android 15). Ten short stalls produced zero ANR associations. [Physical-device results and release plan (中文)](doc/RELEASE_PLAN.zh-CN.md)
 
-[Run the release example and verify its stacks](example/README.md) · [License](LICENSE)
+[Run the usage example](example/README.md) · [Reproduce ANRs in the acceptance lab](tool/anr_lab/README.md) · [License](LICENSE)

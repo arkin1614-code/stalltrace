@@ -1,216 +1,98 @@
-import 'dart:ffi';
-
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:stalltrace/stalltrace.dart';
-import 'package:stalltrace_example/business_scenarios.dart';
 
-const channel = MethodChannel('anr/lab');
-final _wait = DynamicLibrary.open('libstalltrace_fixture.so')
-    .lookupFunction<Void Function(Int32), void Function(int)>(
-      'fixture_native_entry',
-    );
-final _tid = DynamicLibrary.process()
-    .lookupFunction<Int32 Function(), int Function()>('gettid');
+void main() => runApp(const MaterialApp(home: DiagnosticsPage()));
 
-@pragma('vm:never-inline')
-int fixtureDartCompute(int milliseconds) {
-  final timer = Stopwatch()..start();
-  var result = 1;
-  do {
-    for (var i = 0; i < 32768; i++) {
-      result = (result * 48271 + i) & 0x7fffffff;
-    }
-  } while (timer.elapsedMilliseconds < milliseconds);
-  return result;
-}
+class DiagnosticsPage extends StatefulWidget {
+  const DiagnosticsPage({super.key});
 
-@pragma('vm:never-inline')
-int fixtureDartCaller(int ms) => fixtureDartCompute(ms) + 1;
-
-@pragma('vm:never-inline')
-int fixtureDartFfiCaller(int ms) {
-  _wait(ms);
-  return ms + 1;
-}
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  final session = await Stalltrace.start();
-  runApp(MaterialApp(home: Lab(session: session)));
-}
-
-class Lab extends StatefulWidget {
-  const Lab({required this.session, super.key});
-  final StalltraceSession session;
   @override
-  State<Lab> createState() => _LabState();
+  State<DiagnosticsPage> createState() => _DiagnosticsPageState();
 }
 
-class _LabState extends State<Lab> {
-  String status = 'Ready';
-  bool busy = false;
-  bool collecting = true;
+class _DiagnosticsPageState extends State<DiagnosticsPage> {
+  StalltraceSession? _session;
+  List<StalltraceReport>? _reports;
+  bool _busy = false;
+  String? _error;
 
-  Future<void> run(String name) async {
-    if (busy) return;
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _setEnabled(bool enabled) => _perform(() async {
+    if (enabled) {
+      _session = await Stalltrace.start();
+    } else {
+      await Stalltrace.stop();
+      _session = null;
+    }
+    _reports = await Stalltrace.listReports();
+  });
+
+  Future<void> _refresh() => _perform(() async {
+    _reports = await Stalltrace.listReports();
+  });
+
+  Future<void> _perform(Future<void> Function() action) async {
     setState(() {
-      busy = true;
-      status = name;
+      _busy = true;
+      _error = null;
     });
     try {
-      if (const bool.fromEnvironment('STALLTRACE_BUSINESS_LAB') &&
-          (businessLabels.contains(name) || lineSwitchLabels.contains(name))) {
-        await channel.invokeMethod<void>(
-          'mark',
-          'begin $name dartTid=${_tid()}',
-        );
-        final outcome = await runBusinessScenario(name, channel);
-        await channel.invokeMethod<void>('mark', 'end $name $outcome');
-        status = 'Ready';
-      } else if (name == 'Measure overhead') {
-        final wasCollecting = collecting;
-        try {
-          for (final phase in ['paused', 'enabled']) {
-            if (phase == 'paused') {
-              await Stalltrace.stop();
-            } else {
-              await Stalltrace.start();
-            }
-            await channel.invokeMethod<void>('measureIdle', phase);
-          }
-          status = 'Idle measurement complete';
-        } catch (e) {
-          await channel.invokeMethod<void>('mark', 'idle failed');
-          status = 'Idle measurement failed';
-        } finally {
-          if (wasCollecting) {
-            await Stalltrace.start();
-          } else {
-            await Stalltrace.stop();
-          }
-        }
-      } else if (name == 'Pause sampling' || name == 'Resume sampling') {
-        if (collecting) {
-          await Stalltrace.stop();
-        } else {
-          await Stalltrace.start();
-        }
-        collecting = !collecting;
-        status = 'Ready';
-      } else if (name == 'Export') {
-        final reports = await Stalltrace.listReports();
-        status = (await channel.invokeMethod<String>('export', {
-          'directory': widget.session.reportsDirectory,
-          'catalog': [
-            for (final r in reports)
-              {
-                'id': r.id,
-                'kind': r.kind.name,
-                'association': r.traceAssociation.name,
-                'sampleSelection': r.sampleSelection?.name,
-                'exitReportId': r.exitReportId,
-                'sampleMonoNs': r.sampleMonoNs,
-                'sampleDeltaMs': r.sampleDeltaMs,
-                'traceWallMs': r.traceWallMs,
-              },
-          ],
-          'files': [for (final report in reports) ...report.files],
-        }))!;
-        await channel.invokeMethod<void>('mark', 'exported $status');
-      } else {
-        await channel.invokeMethod<void>(
-          'mark',
-          'begin $name dartTid=${_tid()}',
-        );
-        if (name.startsWith('Switch ')) {
-          fixtureDartCaller(
-            const int.fromEnvironment(
-              'STALLTRACE_SWITCH_DART_MS',
-              defaultValue: 11000,
-            ),
-          );
-          DynamicLibrary.open('libstalltrace_fixture.so')
-              .lookupFunction<Void Function(), void Function()>(
-                'fixture_phase_mark',
-              )();
-          fixtureDartFfiCaller(
-            const int.fromEnvironment(
-              'STALLTRACE_SWITCH_FFI_MS',
-              defaultValue: 13000,
-            ),
-          );
-          await channel.invokeMethod<void>('mark', 'end $name');
-          status = 'Ready';
-          return;
-        }
-        if (name == 'Slow load') {
-          await channel.invokeMethod<void>('slowLoad');
-          await channel.invokeMethod<void>('mark', 'end $name');
-          status = 'Ready';
-          return;
-        }
-        if (name == 'Native only') {
-          await channel.invokeMethod<void>('platformWait');
-          await channel.invokeMethod<void>('mark', 'end $name');
-          status = 'Ready';
-          return;
-        }
-        final value = name == 'Native FFI'
-            ? fixtureDartFfiCaller(18000)
-            : fixtureDartCaller(name == 'Short stall' ? 2300 : 18000);
-        await channel.invokeMethod<void>('mark', 'end $name result=$value');
-        status = 'Ready';
-      }
+      await action();
+    } catch (error) {
+      _error = error.toString();
     } finally {
-      if (mounted) {
-        setState(() {
-          busy = false;
-        });
-      }
+      if (mounted) setState(() => _busy = false);
     }
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Stalltrace example')),
-    body: Center(
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (const bool.fromEnvironment('STALLTRACE_BUSINESS_LAB'))
-              TextButton(
-                onPressed: () =>
-                    channel.invokeMethod<void>('mark', 'probe received'),
-                child: const Text('Probe input'),
-              ),
-            for (final name
-                in const bool.fromEnvironment('STALLTRACE_BUSINESS_LAB')
-                    ? [...businessLabels, ...lineSwitchLabels, 'Export']
-                    : [
-                        'Dart CPU',
-                        'Native FFI',
-                        'Native only',
-                        'Short stall',
-                        'Switch early',
-                        'Switch late',
-                        'Slow load',
-                        'Export',
-                        'Measure overhead',
-                        collecting ? 'Pause sampling' : 'Resume sampling',
-                      ])
-              Padding(
-                padding: const EdgeInsets.all(6),
-                child: FilledButton(
-                  onPressed: busy ? null : () => run(name),
-                  child: Text(name),
-                ),
-              ),
-            Text(status, textAlign: TextAlign.center),
-          ],
-        ),
+  Widget build(BuildContext context) {
+    final reports = _reports;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Stalltrace example')),
+      body: ListView(
+        children: [
+          SwitchListTile(
+            title: const Text('Collect foreground stalls'),
+            subtitle: Text(switch (_session?.nativeSamplingAvailable) {
+              true => 'Collecting Java and native stacks',
+              false => 'Collecting Java stacks only',
+              null => 'Collection is off',
+            }),
+            value: _session != null,
+            onChanged: _busy ? null : _setEnabled,
+          ),
+          const Divider(),
+          ListTile(
+            title: const Text('Local reports'),
+            trailing: IconButton(
+              tooltip: 'Refresh reports',
+              onPressed: _busy ? null : _refresh,
+              icon: const Icon(Icons.refresh),
+            ),
+          ),
+          if (_error != null) ListTile(title: Text(_error!)),
+          if (reports != null && reports.isEmpty && _error == null)
+            const ListTile(title: Text('No saved reports')),
+          for (final report in reports ?? <StalltraceReport>[])
+            ListTile(
+              title: Text(switch (report.kind) {
+                StalltraceReportKind.stall =>
+                  report.traceAssociation == StalltraceTraceAssociation.matched
+                      ? 'Stall with Android input ANR trace'
+                      : 'Foreground stall',
+                StalltraceReportKind.processExit =>
+                  report.confirmedAnrExit ? 'ANR exit' : 'Process exit',
+              }),
+              subtitle: Text(report.id),
+            ),
+        ],
       ),
-    ),
-  );
+    );
+  }
 }

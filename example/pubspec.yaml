@@ -1,5 +1,5 @@
 name: stalltrace_example
-description: Reproduce Dart CPU stalls and synchronous native waits with Stalltrace.
+description: Enable Stalltrace and inspect local Android reports using the public Flutter API.
 publish_to: none
 environment:
   sdk: ^3.13.0
@@ -9,8 +9,6 @@ dependencies:
   stalltrace:
     path: ../
 dev_dependencies:
-  integration_test:
-    sdk: flutter
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0

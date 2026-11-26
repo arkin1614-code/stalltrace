@@ -1,32 +1,60 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:stalltrace/stalltrace.dart';
 import 'package:stalltrace_example/main.dart';
 
 void main() {
-  testWidgets('offers all workloads, export and pause', (tester) async {
+  testWidgets('reads saved reports and collects only after opt-in', (
+    tester,
+  ) async {
     const channel = MethodChannel('dev.stalltrace/collector');
-    final messenger = tester.binding.defaultBinaryMessenger;
-    messenger.setMockMethodCallHandler(
-      channel,
-      (call) async => {
-        'nativeSamplingAvailable': true,
-        'reportsDirectory': '/private/reports',
-      },
-    );
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      return switch (call.method) {
+        'listReports' => [
+          {
+            'id': 'saved-report',
+            'kind': 'stall',
+            'confirmedAnrExit': false,
+            'active': false,
+            'files': ['saved-report.jsonl'],
+          },
+        ],
+        'start' => {
+          'nativeSamplingAvailable': false,
+          'reportsDirectory': '/private/reports',
+        },
+        'stop' => null,
+        _ => throw UnsupportedError(call.method),
+      };
+    });
     addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
-    final session = await Stalltrace.start();
-    await tester.pumpWidget(MaterialApp(home: Lab(session: session)));
-    for (final label in [
-      'Dart CPU',
-      'Native FFI',
-      'Native only',
-      'Short stall',
-      'Export',
-      'Pause sampling',
-    ]) {
-      expect(find.widgetWithText(FilledButton, label), findsOneWidget);
-    }
+
+    await tester.pumpWidget(const MaterialApp(home: DiagnosticsPage()));
+    await tester.pumpAndSettle();
+    expect(calls, ['listReports']);
+    expect(find.text('Foreground stall'), findsOneWidget);
+    expect(find.text('saved-report'), findsOneWidget);
+
+    await tester.tap(find.byType(Switch));
+    await tester.pumpAndSettle();
+    expect(find.text('Collecting Java stacks only'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Refresh reports'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Switch));
+    await tester.pumpAndSettle();
+    expect(find.text('Collection is off'), findsOneWidget);
+    expect(calls, [
+      'listReports',
+      'start',
+      'listReports',
+      'listReports',
+      'stop',
+      'listReports',
+    ]);
   });
 }

@@ -31,17 +31,17 @@
 
 ## 复现
 
-需要专用的、已解锁的 ARM64 Android 设备。运行器会更新并反复重启示例，仅向已确认处于前台的示例窗口注入触摸，在本地保存系统与应用诊断。以下命令从仓库根目录执行。保留同一次构建的 APK、Dart 符号和 R8 映射。
+该组场景位于 `tool/anr_lab/`。需要专用的、已解锁的 ARM64 Android 设备。运行器会更新并反复重启示例，仅向已确认处于前台的示例窗口注入触摸，在本地保存系统与应用诊断。以下命令从仓库根目录执行。保留同一次构建的 APK、Dart 符号和 R8 映射。
 
 ```sh
-(cd example && flutter build apk --release --obfuscate --target-platform android-arm64 \
+(cd tool/anr_lab && flutter pub get && flutter build apk --release --obfuscate --target-platform android-arm64 \
   --split-debug-info=build/scenario-symbols --dart-define=STALLTRACE_BUSINESS_LAB=true)
-TOOLS=example/build/app/outputs
-RUN=example/build/business-run
+TOOLS=tool/anr_lab/build/app/outputs
+RUN=tool/anr_lab/build/business-run
 python3 tool/business_run.py --serial "$SERIAL" --rounds 3 --out "$RUN" \
   --install "$TOOLS/flutter-apk/app-release.apk"
 python3 tool/verify_business.py "$RUN" --llvm "$LLVM_BIN" \
-  --dart-symbols example/build/scenario-symbols/app.android-arm64.symbols \
+  --dart-symbols tool/anr_lab/build/scenario-symbols/app.android-arm64.symbols \
   --mapping "$TOOLS/mapping/release/mapping.txt" \
   --r8-jar "$ANDROID_HOME/build-tools/36.0.0/lib/d8.jar"
 ```
@@ -55,7 +55,7 @@ python3 tool/verify_business.py "$RUN" --llvm "$LLVM_BIN" \
 ```sh
 python3 tool/diagnose.py "$RUN/round-1/raw" "$STALL_ID" \
   --llvm "$LLVM_BIN" --elf "libc.so=$RUN/libc.so" \
-  --elf "libapp.so=example/build/scenario-symbols/app.android-arm64.symbols" \
+  --elf "libapp.so=tool/anr_lab/build/scenario-symbols/app.android-arm64.symbols" \
   --mapping "$TOOLS/mapping/release/mapping.txt" \
   --r8-jar "$ANDROID_HOME/build-tools/36.0.0/lib/d8.jar" \
   --java-package dev.stalltrace.stalltrace_example --dart-file lib/business_scenarios.dart
