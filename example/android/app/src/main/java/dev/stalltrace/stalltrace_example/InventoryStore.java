@@ -96,4 +96,11 @@ final class InventoryStore extends SQLiteOpenHelper {
         });
         startEdit(database, onMain, result);
     }
+
+    void waitAtTwoLines() {
+        Log.i("ScenarioLab", "writer tid=" + Process.myTid());
+        SystemClock.sleep(5550);
+        Log.i("ScenarioLab", "phase second tid=" + Process.myTid());
+        SystemClock.sleep(9000);
+    }
 }

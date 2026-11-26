@@ -65,6 +65,29 @@ void main() {
     },
   );
 
+  test('decodes adjacent Java site evidence', () async {
+    messenger.setMockMethodCallHandler(
+      channel,
+      (call) async => [
+        {
+          'id': 'stall',
+          'kind': 'stall',
+          'confirmedAnrExit': true,
+          'active': false,
+          'files': ['s.jsonl'],
+          'traceAssociation': 'matched',
+          'exitReportId': 'exit',
+          'traceWallMs': 2000,
+          'sampleDeltaMs': -1350,
+          'sampleMonoNs': 12345,
+          'sampleSelection': 'matchingJavaSite',
+        },
+      ],
+    );
+    final report = (await Stalltrace.listReports()).single;
+    expect(report.sampleSelection, StalltraceSampleSelection.matchingJavaSite);
+  });
+
   test(
     'lists grouped evidence and deletes by opaque ID without starting',
     () async {

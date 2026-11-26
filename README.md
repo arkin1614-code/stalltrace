@@ -46,7 +46,9 @@ Listing returns opaque IDs, the evidence kind, active state and relative file na
 
 The association uses the primary input-timeout dump's PID, process name and millisecond timestamp, the observed stall interval and its native sample times. `ambiguous` means multiple matches are possible. `none` covers unavailable evidence, including older stall records without a process name, unsupported trace formats and clock changes. `confirmedAnrExit` describes Android's recorded cause of death. A recovered input ANR can have a matched trace on a subsequent exit with a different cause. The signed delta measures distance to the dump time.
 
-For matched dumps, the collector compares the immediately preceding and following samples. Within 2.5 seconds of the dump, a sample with the same leaf module Build ID and two consecutive matching saved call sites takes precedence. The sample exposes `matchingFrames` when this evidence is available and `nearestTime` when only proximity supports selection. A time-only sample can fall on the other side of a workload transition. The split debug files still need to match the captured ELF Build IDs for offline symbolization.
+For matched dumps, the collector examines the native samples immediately before and after the dump, within 2.5 seconds. `matchingFrames` requires the same leaf module Build ID and two consecutive saved call sites. When both candidates qualify, a deeper sequence of matching Build IDs and return addresses can distinguish two calls into the same native function. A shorter unwind alone provides no evidence of a different caller.
+
+`matchingJavaSite` identifies the same positioned Java frame in the process package or an R8-mapped APK frame, with the same caller and immediate callee. The Java stack must immediately follow that native acquisition in the same segment, finish within 250 ms of it and still belong to a pending probe. Agreement in both stacks takes precedence, followed by a Java site match, a native match and finally `nearestTime`. The Java and native capture times are recorded separately.
 
 If Android terminates the process for an ANR, the dump can arrive after the last persisted sample. For the latest unfinished probe in that process, Stalltrace also checks whether the last sample matches the primary dump by frames. Both the sample-to-dump and dump-to-exit intervals must be within 2.5 seconds. A recovery marker, a newer probe, or missing frame evidence excludes that extension.
 
@@ -64,6 +66,8 @@ The input may be a JSONL snapshot file or an Android ANR trace. `DART_SYMBOLS` p
 A library can be mapped while a sample is being taken. If the executable mapping cannot be verified both before and after capture, the raw record retains the address and the decoded frame is unknown. Other verified frames in that sample remain usable.
 
 To inspect one incident, run `python3 tool/diagnose.py "$EXPORT_DIR" "$STALL_ID"` from the checkout. It reads the stall entry from the example’s exported catalog and reports the selected live sample alongside the primary Android dump when available. Add the matching ELF symbols, R8 mapping, application package and Dart source paths to see business frames and the owning thread for an explicitly recorded Java monitor wait. [Reproduction commands and device results (中文)](doc/BUSINESS_SCENARIOS.zh-CN.md)
+
+With `--java-package` or `--dart-file`, read `sourceLines.java.atDump` or `sourceLines.dart.atDump` for the positioned application frame in the primary Android dump. `selected` is the on-device sample’s line. `corroboratingCaptureMonoNs` identifies the nearby sample whose business function, source file and line agree after symbolization. Inspect `neighbors` for changes across the dump. A missing system line stays null even if two samples agree. The reported position applies to the system snapshot and can differ from the work running when the input first timed out.
 
 ## Android support
 

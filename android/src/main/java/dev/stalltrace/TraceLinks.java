@@ -7,6 +7,7 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -20,10 +21,12 @@ final class TraceLinks {
         long wall;
         boolean nearAnrExit;
         List<String> prefix = Collections.emptyList();
+        List<String> javaSite;
     }
 
     // Two consecutive saved return PCs guard against shared libc waits and generic event-loop frames.
     private static final int MAX_NEIGHBOR_MS = 2500;
+    private static final int MAX_NATIVE_FRAMES = 16;
     private static final Pattern NATIVE =
         Pattern.compile("native: #(\\d+) pc ([0-9a-fA-F]+)\\s+.*?\\(BuildId: ([0-9a-fA-F]+)\\)");
     private static String frameKey(String id, String pc) {
@@ -31,8 +34,8 @@ final class TraceLinks {
     }
     private static List<String> capturePrefix(String sample) {
         String[] lines = sample.split("\\n", 7);
-        List<String> frames = new ArrayList<>(3);
-        for (int i = 1; i < lines.length && frames.size() < 3; i++) {
+        List<String> frames = new ArrayList<>();
+        for (int i = 1; i < lines.length && frames.size() < MAX_NATIVE_FRAMES; i++) {
             String[] words = lines[i].split(" ");
             if (words.length != 4)
                 break;
@@ -45,10 +48,29 @@ final class TraceLinks {
         }
         return frames;
     }
-    private static List<String> primaryPrefix(BufferedReader in, int pid) throws IOException {
-        boolean main = false, target = false;
-        List<String> frames = new ArrayList<>(4);
-        Pattern tid = Pattern.compile("\\bsysTid=" + pid + "\\b");
+    private static final int MAX_JAVA_FRAMES = 48;
+    private static final Pattern POSITION = Pattern.compile(".*\\([^():]+:[1-9][0-9]*\\)$");
+    private static final Pattern R8_POSITION = Pattern.compile(".*\\(r8-map-id-[a-fA-F0-9]{7,64}:.*");
+
+    // Match the innermost identifiable APK site, its caller and its immediate callee.
+    // A common framework suffix or a deeper ancestor cannot independently identify the site.
+    private static List<String> javaSite(List<String> frames, String process) {
+        String appPrefix = process.split(":", 2)[0] + ".";
+        for (int i = 0; i + 1 < frames.size(); i++) {
+            String frame = frames.get(i);
+            if (!frame.startsWith(appPrefix) && !R8_POSITION.matcher(frame).matches())
+                continue;
+            String caller = frames.get(i + 1);
+            if (!POSITION.matcher(frame).matches() || !POSITION.matcher(caller).matches())
+                return null;
+            return Arrays.asList(i > 0 ? frames.get(i - 1) : "", frame, caller);
+        }
+        return null;
+    }
+    private static void readMain(BufferedReader in, Dump dump) throws IOException {
+        boolean main = false, target = false, nativePrefix = true;
+        List<String> frames = new ArrayList<>(), java = new ArrayList<>();
+        Pattern tid = Pattern.compile("\\bsysTid=" + dump.pid + "\\b");
         String line;
         while ((line = in.readLine()) != null) {
             if (line.startsWith("----- "))
@@ -61,36 +83,74 @@ final class TraceLinks {
             }
             if (!main)
                 continue;
-            if (line.trim().isEmpty())
+            String trimmed = line.trim();
+            if (trimmed.isEmpty())
                 break;
             if (tid.matcher(line).find())
                 target = true;
-            if (!line.contains("native: #"))
+            if (!target)
                 continue;
-            Matcher m = NATIVE.matcher(line);
-            if (!target || !m.find() || Integer.parseInt(m.group(1)) != frames.size())
-                break;
-            frames.add(frameKey(m.group(3), m.group(2)));
-            if (frames.size() == 4)
-                break;
+            if (trimmed.startsWith("at ")) {
+                java.add(trimmed.substring(3));
+                if (java.size() == MAX_JAVA_FRAMES)
+                    break;
+            } else if (nativePrefix && frames.size() < MAX_NATIVE_FRAMES + 1 && line.contains("native: #")) {
+                Matcher m = NATIVE.matcher(line);
+                nativePrefix = m.find() && Integer.parseInt(m.group(1)) == frames.size();
+                if (nativePrefix)
+                    frames.add(frameKey(m.group(3), m.group(2)));
+            }
         }
-        return frames;
+        dump.prefix = frames;
+        dump.javaSite = javaSite(java, dump.process);
     }
-    private static boolean matchesFrames(List<String> sample, List<String> dump) {
-        if (sample == null || sample.size() < 3 || dump.size() < 3)
-            return false;
-        if (!sample.get(0).split("/")[0].equals(dump.get(0).split("/")[0]))
-            return false;
-        for (int i = 1; i + 1 < dump.size(); i++) {
-            if (sample.get(1).equals(dump.get(i)) && sample.get(2).equals(dump.get(i + 1)))
-                return true;
+    private static final class NativeMatch {
+        final int calls;
+        final boolean diverged;
+        NativeMatch(int calls, boolean diverged) {
+            this.calls = calls;
+            this.diverged = diverged;
         }
-        return false;
+        boolean distinguishes(NativeMatch other) {
+            // A truncated chain is missing evidence. Prefer a longer chain only when
+            // both walks actually saw the return address at which the other disagreed.
+            return calls > other.calls && other.diverged;
+        }
+    }
+    private static final NativeMatch NO_MATCH = new NativeMatch(0, false);
+    private static NativeMatch nativeMatch(List<String> sample, List<String> dump) {
+        if (sample == null || sample.size() < 3 || dump.size() < 3 ||
+            !sample.get(0).split("/")[0].equals(dump.get(0).split("/")[0]))
+            return NO_MATCH;
+        NativeMatch best = NO_MATCH;
+        // Only skip the same optional leaf return as the original two-call-site test.
+        for (int offset = 1; offset <= 2; offset++) {
+            int limit = Math.min(sample.size() - 1, dump.size() - offset);
+            int calls = 0;
+            while (calls < limit && sample.get(1 + calls).equals(dump.get(offset + calls)))
+                calls++;
+            if (calls >= 2 && (calls > best.calls || (calls == best.calls && calls == limit)))
+                best = new NativeMatch(calls, calls < limit);
+        }
+        return best;
+    }
+    private static final class JavaObservation {
+        final List<String> site;
+        final long firstWall, lastWall;
+        JavaObservation(List<String> site, long firstWall, long lastWall) {
+            this.site = site;
+            this.firstWall = firstWall;
+            this.lastWall = lastWall;
+        }
+        long distance(long wall) {
+            return Math.max(Math.abs(firstWall - wall), Math.abs(lastWall - wall));
+        }
     }
     private static final class Stall {
         final Map<String, Object> row;
         final NavigableMap<Long, Long> samples = new TreeMap<>(); // wall milliseconds -> capture monotonic ns
         final Map<Long, List<String>> prefixes = new HashMap<>();
+        final Map<Long, JavaObservation> javaSamples = new HashMap<>();
         final List<Dump> dumps = new ArrayList<>();
         String process = "";
         int pid;
@@ -101,15 +161,32 @@ final class TraceLinks {
         }
         void read(File file) throws IOException {
             try (BufferedReader in = reader(file)) {
+                long pairedMono = 0, nativeEnd = 0, nativeWall = 0;
                 String line;
                 while ((line = in.readLine()) != null) {
                     JSONObject r;
                     try {
                         r = new JSONObject(line);
                     } catch (JSONException partial) {
+                        pairedMono = 0;
                         continue;
                     }
                     String type = r.optString("type");
+                    if (type.equals("java_sample") && pairedMono != 0 && r.optBoolean("pendingAfterJava")) {
+                        long first = r.optLong("monoNs"), last = r.optLong("endMonoNs");
+                        JSONArray frames = r.optJSONArray("frames");
+                        if (first >= nativeEnd && last >= first && last - pairedMono <= 250_000_000L && frames != null) {
+                            List<String> java = new ArrayList<>();
+                            for (int i = 0; i < Math.min(frames.length(), MAX_JAVA_FRAMES); i++)
+                                java.add(frames.optString(i));
+                            List<String> site = javaSite(java, process);
+                            if (site != null)
+                                javaSamples.put(pairedMono, new JavaObservation(site,
+                                    nativeWall + (first - nativeEnd) / 1_000_000L,
+                                    nativeWall + (last - nativeEnd) / 1_000_000L));
+                        }
+                    }
+                    pairedMono = 0;
                     if (type.equals("ack") || type.equals("lifecycle_end")) {
                         ended = true;
                         long wall = r.optLong("wallMs"), up = r.optLong("uptimeMs");
@@ -150,8 +227,15 @@ final class TraceLinks {
                             continue;
                         long at = stamp - (endNs - mono) / 1000000;
                         samples.put(at, mono);
-                        if (type.equals("stall_sample"))
+                        if (type.equals("stall_sample")) {
                             prefixes.put(mono, capturePrefix(nativeText));
+                            if ((r.optString("session") + "-" + r.optLong("probe")).equals(row.get("id")) &&
+                                nativeText.startsWith(mono + " " + pid + " ")) {
+                                pairedMono = mono;
+                                nativeEnd = endNs;
+                                nativeWall = stamp;
+                            }
+                        }
                         end = Math.max(end, at);
                     } catch (NumberFormatException ignored) {
                     }
@@ -203,7 +287,7 @@ final class TraceLinks {
                     return null;
                 d.wall = date.getTime();
                 d.nearAnrExit = exit.optBoolean("reasonAnr") && exit.optLong("exitWallMs") - d.wall <= MAX_NEIGHBOR_MS;
-                d.prefix = primaryPrefix(in, d.pid);
+                readMain(in, d);
                 return d;
             }
         } catch (JSONException | NumberFormatException malformed) {
@@ -253,7 +337,7 @@ final class TraceLinks {
                         continue;
                     Map.Entry<Long, Long> last = s.samples.lastEntry();
                     if (dump.wall - last.getKey() <= MAX_NEIGHBOR_MS &&
-                        matchesFrames(s.prefixes.get(last.getValue()), dump.prefix))
+                        nativeMatch(s.prefixes.get(last.getValue()), dump.prefix).calls >= 2)
                         candidates.add(s);
                 }
             }
@@ -273,18 +357,36 @@ final class TraceLinks {
             long at = before != null ? before : after;
             if (after != null && Math.abs(after - d.wall) < Math.abs(at - d.wall))
                 at = after;
-            Long supported = null;
+            int bestRank = 0;
+            NativeMatch bestNative = NO_MATCH;
+            long bestDistance = Long.MAX_VALUE;
             for (Long candidate : Arrays.asList(before, after)) {
-                if (candidate == null || Math.abs(candidate - d.wall) > MAX_NEIGHBOR_MS)
+                if (candidate == null)
                     continue;
-                if (!matchesFrames(s.prefixes.get(s.samples.get(candidate)), d.prefix))
+                long distance = Math.abs(candidate - d.wall);
+                if (distance > MAX_NEIGHBOR_MS)
                     continue;
-                if (supported == null || Math.abs(candidate - d.wall) < Math.abs(supported - d.wall))
-                    supported = candidate;
+                long mono = s.samples.get(candidate);
+                NativeMatch nativeFrames = nativeMatch(s.prefixes.get(mono), d.prefix);
+                int rank = nativeFrames.calls >= 2 ? 1 : 0;
+                JavaObservation java = s.javaSamples.get(mono);
+                if (java != null && java.site.equals(d.javaSite) && java.distance(d.wall) <= MAX_NEIGHBOR_MS) {
+                    rank += 2;
+                    distance = java.distance(d.wall);
+                }
+                boolean winsTie = distance < bestDistance;
+                if (rank == bestRank && nativeFrames.calls >= 2 && bestNative.calls >= 2) {
+                    if (nativeFrames.distinguishes(bestNative)) winsTie = true;
+                    if (bestNative.distinguishes(nativeFrames)) winsTie = false;
+                }
+                if (rank > 0 && (rank > bestRank || (rank == bestRank && winsTie))) {
+                    bestNative = nativeFrames;
+                    at = candidate;
+                    bestRank = rank;
+                    bestDistance = distance;
+                }
             }
-            if (supported != null)
-                at = supported;
-            s.row.put("sampleSelection", supported != null ? "matchingFrames" : "nearestTime");
+            s.row.put("sampleSelection", bestRank >= 2 ? "matchingJavaSite" : bestRank == 1 ? "matchingFrames" : "nearestTime");
             s.row.put("traceAssociation", "matched");
             s.row.put("exitReportId", d.id);
             s.row.put("traceWallMs", d.wall);

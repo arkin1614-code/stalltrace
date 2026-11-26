@@ -99,6 +99,91 @@ public class TraceLinksTest {
         assertEquals(721L, row(1).get("sampleDeltaMs"));
     }
     @Test
+    public void deeperReturnAddressCanSeparateTwoCallsIntoTheSameFfiFunction() throws Exception {
+        stall(1, 0, 7000);
+        File file = new File(folder.getRoot(), PREFIX + "1.jsonl");
+        JSONObject sample = new JSONObject(Files.readAllLines(file.toPath()).get(0));
+        StringBuilder rows = new StringBuilder();
+        for (long at : new long[]{2750, 4750}) {
+            long mono = (1000 + at) * 1_000_000;
+            String site = at == 2750 ? "aa" : "bb";
+            sample.put("sampleWallMs", T + at).put("sampleStartMonoNs", mono - 10).put("sampleEndMonoNs", mono)
+                .put("native", mono + " 7 0\npc libc.so cc 0\ncall libffi.so dd 1\ncall libapp.so ee 2"
+                    + "\ncall libapp.so ee 3\ncall libapp.so ee " + site);
+            rows.append(sample).append('\n');
+        }
+        write(file.getName(), rows.toString());
+        dump("app");
+        String main = "\"main\" prio=5 tid=1\n | sysTid=7\n native: #00 pc 0 c (BuildId: cc)\n"
+            + " native: #01 pc ff d (BuildId: dd)\n native: #02 pc 1 d (BuildId: dd)\n"
+            + " native: #03 pc 2 e (BuildId: ee)\n native: #04 pc 3 e (BuildId: ee)\n native: #05 pc aa e (BuildId: ee)\n";
+        Files.write(new File(folder.getRoot(), EXIT + ".trace").toPath(), main.getBytes(StandardCharsets.UTF_8),
+            java.nio.file.StandardOpenOption.APPEND);
+        assertEquals("matchingFrames", row(1).get("sampleSelection"));
+        assertEquals(-1350L, row(1).get("sampleDeltaMs"));
+        // The nearer walk ended at that depth; it never observed a contradictory return address.
+        write(file.getName(), rows.toString().replace("\\ncall libapp.so ee bb", ""));
+        assertEquals(650L, row(1).get("sampleDeltaMs"));
+        // A deeper suffix cannot rescue a mismatch at the first two saved calls.
+        write(file.getName(), rows.toString().replace("libffi.so dd 1","libffi.so ff 1"));
+        assertEquals("nearestTime", row(1).get("sampleSelection"));
+    }
+    private static final String FIRST = "app.Work.run(Work.java:12)";
+    private static final String SECOND = "app.Work.run(Work.java:18)";
+    private static final String CALLER = "app.Edit.save(Edit.java:7)";
+    private void javaNeighbors(String first, String second, String caller, String dumpFrame,
+                               boolean pending, long javaDurationNs, boolean split) throws Exception {
+        stall(1, 0, 7000);
+        File file = new File(folder.getRoot(), PREFIX + "1.jsonl");
+        JSONObject sample = new JSONObject(Files.readAllLines(file.toPath()).get(0))
+            .put("session", PREFIX.substring(0, PREFIX.length() - 1)).put("probe", 1);
+        StringBuilder records = new StringBuilder();
+        for (long at : new long[]{2750, 4750}) {
+            long mono = (1000 + at) * 1_000_000;
+            sample.put("sampleWallMs", T + at).put("sampleStartMonoNs", mono - 1)
+                .put("sampleEndMonoNs", mono).put("native", mono + " 7 0\npc libc.so aa 0");
+            JSONObject java = new JSONObject().put("type", "java_sample").put("monoNs", mono + 1000)
+                .put("endMonoNs", mono + 1000 + javaDurationNs).put("pendingAfterJava", pending)
+                .put("frames", new org.json.JSONArray(Arrays.asList(at == 2750 ? first : second, caller)));
+            records.append(sample).append('\n');
+            if (split) write(PREFIX + "1-tail0.jsonl", java + "\n");
+            else records.append(java).append('\n');
+        }
+        write(file.getName(), records.toString());
+        dump("app");
+        Files.write(new File(folder.getRoot(), EXIT + ".trace").toPath(),
+            ("\"main\" prio=5 tid=1\n | sysTid=7\n  at " + dumpFrame + "\n  at " + caller + "\n\n")
+                .getBytes(StandardCharsets.UTF_8), java.nio.file.StandardOpenOption.APPEND);
+    }
+    @Test
+    public void choosesFartherJavaObservationAtTheSameLine() throws Exception {
+        javaNeighbors(FIRST, SECOND, CALLER, FIRST, true, 10, false);
+        assertEquals("matchingJavaSite", row(1).get("sampleSelection"));
+        assertEquals(-1350L, row(1).get("sampleDeltaMs"));
+        javaNeighbors(FIRST, FIRST, CALLER, FIRST, true, 10, false);
+        assertEquals(650L, row(1).get("sampleDeltaMs"));
+        String r8 = "a.b(r8-map-id-1234abcd:11)";
+        javaNeighbors(r8, r8.replace(":11", ":12"), CALLER, r8, true, 10, false);
+        assertEquals(-1350L, row(1).get("sampleDeltaMs"));
+    }
+    @Test
+    public void refusesLateRecoveredCrossSegmentAndUnpositionedJavaEvidence() throws Exception {
+        javaNeighbors(FIRST, SECOND, CALLER, FIRST, false, 10, false);
+        assertEquals("nearestTime", row(1).get("sampleSelection"));
+        javaNeighbors(FIRST, SECOND, CALLER, FIRST, true, 300_000_000, false);
+        assertEquals("nearestTime", row(1).get("sampleSelection"));
+        javaNeighbors(FIRST, SECOND, CALLER, FIRST, true, 10, true);
+        assertEquals("nearestTime", row(1).get("sampleSelection"));
+        String loop = "android.os.Looper.loop(Looper.java:12)";
+        javaNeighbors(loop, loop, loop, loop, true, 10, false);
+        assertEquals("nearestTime", row(1).get("sampleSelection"));
+        javaNeighbors(FIRST, FIRST, CALLER, SECOND, true, 10, false);
+        assertEquals("nearestTime", row(1).get("sampleSelection"));
+        String missing = "app.Work.run(Unknown Source)";
+        javaNeighbors(missing, missing, CALLER, missing, true, 10, false);
+        assertEquals("nearestTime", row(1).get("sampleSelection"));
+    }
+    @Test
     public void fatalDumpJustAfterLastSampleNeedsOpenProbeAndMatchingFrames() throws Exception {
         stall(1, 7000, 8800);
         File samples = new File(folder.getRoot(), PREFIX + "1.jsonl");

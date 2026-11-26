@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import re
 
-from business_run import CASES, PKG
+from business_run import CASES, LINE_SWITCHES, PKG
 from diagnose import diagnose, STALL
 from symbolize import Symbols, complete_records
 
@@ -53,7 +53,7 @@ def reports_for(raw, case, package):
 
 def check_case(case, package, raw, symbols, mapping, retrace):
     name, pid = case["name"], case["pid"]
-    positive = name.endswith(" UI")
+    positive = name.endswith(" UI") or name in LINE_SWITCHES
     family = name.split()[0]
     start, end = stamp(case["begin"]), stamp(case["end"])
     injected = case["injected"]
@@ -76,6 +76,11 @@ def check_case(case, package, raw, symbols, mapping, retrace):
                 and field(case["end"], "checksum") == pages * CHECKSUM_PER_PAGE,
                 "JSON checksum mismatch",
             )
+    elif name in LINE_SWITCHES:
+        require(
+            int(case["work"].split()[2]) == pid,
+            "two-line workload did not run on the main thread",
+        )
     else:
         holder = [l for l in case["markers"] if "holder tid=" in l]
         require(len(holder) == 1, "missing independent holder marker")
@@ -156,7 +161,55 @@ def check_case(case, package, raw, symbols, mapping, retrace):
         liveApplication=live["applicationFrames"],
         systemApplication=system["applicationFrames"],
     )
-    if family == "JSON":
+    language = "dart" if family in ("JSON", "Dart") else "java"
+    row["sourceLines"] = result["sourceLines"][language]
+    if name in LINE_SWITCHES:
+        java = language == "java"
+        first, second = (102, 104) if java else (55, 57)
+        marker = "phase second tid=" if java else "switch to native"
+        changes = [stamp(line) * 1000 for line in case["markers"] if marker in line]
+        require(len(changes) == 1, "missing phase transition marker")
+        change_delta = changes[0] - system["wallMs"]
+        require(
+            abs(change_delta) > 5,
+            "dump too close to phase transition to verify independently",
+        )
+        evidence = row["sourceLines"]
+        expected = first if change_delta > 0 else second
+        require(
+            evidence["atDump"]
+            and evidence["atDump"]["function"]
+            == (STORE + "waitAtTwoLines" if java else "waitAtTwoDartLines")
+            and evidence["atDump"]["file"]
+            == ("InventoryStore.java" if java else DART_FILE)
+            and evidence["atDump"]["line"] == expected
+            and evidence["corroboratingCaptureMonoNs"] is not None,
+            "source line lacks an agreeing neighbor or differs from the phase marker",
+        )
+        require(
+            evidence["relation"] == "sameLine"
+            and row["selection"] == ("matchingJavaSite" if java else "matchingFrames"),
+            "device-selected sample is not at the independently verified source line",
+        )
+        for obs in evidence["neighbors"]:
+            observed = obs["observationDeltaMs"]
+            if observed is not None and abs(observed - change_delta) > 5:
+                line = first if observed < change_delta else second
+                require(
+                    obs["position"] and obs["position"]["line"] == line,
+                    "neighbor disagrees with phase marker",
+                )
+        nearest = min(
+            evidence["neighbors"],
+            key=lambda obs: (abs(obs["nativeDeltaMs"]), obs["nativeDeltaMs"]),
+        )
+        row.update(
+            phaseChangeDeltaMs=round(change_delta),
+            nearestTimeLine=nearest["position"]["line"]
+            if nearest["position"]
+            else None,
+        )
+    elif family == "JSON":
         require(
             live["mechanism"] in ("dartJsonDecode", "dartAotExecution"),
             "missing Dart live stack",
@@ -244,7 +297,8 @@ def main():
     for folder in sorted(args.run.glob("round-*")):
         cases = json.loads((folder / "cases.json").read_text())
         require(
-            [c["name"] for c in cases] == list(CASES),
+            tuple(c["name"] for c in cases)
+            in (CASES, CASES + ("Line switch",), CASES + LINE_SWITCHES),
             "missing or unordered cases in " + folder.name,
         )
         rows = []
@@ -263,7 +317,8 @@ def main():
             except ValueError as exc:
                 raise ValueError(f"{folder.name}, {case['name']}: {exc}") from exc
         require(
-            rows[-2]["pages"] == rows[-1]["pages"],
+            next(r["pages"] for r in rows if r["name"] == "JSON isolate")
+            == next(r["pages"] for r in rows if r["name"] == "JSON UI"),
             "UI and isolate used different workloads",
         )
         rounds.append(rows)

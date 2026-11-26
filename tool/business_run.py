@@ -21,6 +21,9 @@ CASES = (
 )
 
 
+LINE_SWITCHES = ("Line switch", "Dart line switch")
+
+
 class Device:
     def __init__(self, adb, serial, package):
         self.command = [adb, "-s", serial]
@@ -135,7 +138,11 @@ class Device:
         begin = self.marker(pid, "begin " + name, start)
         since = float(begin.split()[0])
         work = self.marker(
-            pid, "work " + name if name.startswith("JSON") else "writer tid=", since
+            pid,
+            "work " + name
+            if name.startswith("JSON") or name == "Dart line switch"
+            else "writer tid=",
+            since,
         )
         injected = self.now()
         self.tap(controls["Probe input"])
@@ -148,7 +155,16 @@ class Device:
             if len(l.split()) > 5
             and l.split()[1] == str(pid)
             and since <= float(l.split()[0]) <= until
-            and any(m in l for m in ("holder tid=", "probe received", "writer tid="))
+            and any(
+                m in l
+                for m in (
+                    "holder tid=",
+                    "probe received",
+                    "writer tid=",
+                    "phase second tid=",
+                    "switch to native",
+                )
+            )
         ]
         return dict(
             name=name,
@@ -184,6 +200,11 @@ def main():
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--package", default=PKG)
     p.add_argument("--rounds", type=int, default=1)
+    p.add_argument(
+        "--line-switch",
+        action="store_true",
+        help="also exercise two different wait lines in one Java or Dart function",
+    )
     p.add_argument("--install", type=Path)
     args = p.parse_args()
     if not 1 <= args.rounds <= 10:
@@ -217,7 +238,7 @@ def main():
             folder = args.out / f"round-{n}"
             folder.mkdir()
             cases = []
-            for name in CASES:
+            for name in CASES + LINE_SWITCHES if args.line_switch else CASES:
                 case = device.run(name)
                 cases.append(case)
                 (folder / "cases.json").write_text(json.dumps(cases, indent=2) + "\n")

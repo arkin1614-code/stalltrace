@@ -29,7 +29,13 @@ enum StalltraceReportKind {
 enum StalltraceTraceAssociation { none, matched, ambiguous }
 
 /// Evidence used to choose a live sample adjacent to the Android dump.
-enum StalltraceSampleSelection { matchingFrames, nearestTime }
+enum StalltraceSampleSelection {
+  matchingFrames,
+  nearestTime,
+
+  /// Adjacent main-thread Java observation matches a positioned APK frame and its call context.
+  matchingJavaSite,
+}
 
 /// A snapshot of one report's metadata. File names are relative to the session directory.
 final class StalltraceReport {
@@ -79,6 +85,7 @@ final class StalltraceReport {
   final int? sampleMonoNs;
 
   /// Matching frames require the same leaf module and two consecutive saved call sites.
+  /// A Java site match describes the managed call site observed shortly after native capture.
   /// A time-only match may span a change in workload. Older plugins omit this field.
   final StalltraceSampleSelection? sampleSelection;
 
@@ -122,6 +129,7 @@ final class StalltraceReport {
           value['sampleMonoNs'] as int?,
           switch (value['sampleSelection']) {
             'matchingFrames' => StalltraceSampleSelection.matchingFrames,
+            'matchingJavaSite' => StalltraceSampleSelection.matchingJavaSite,
             'nearestTime' => StalltraceSampleSelection.nearestTime,
             null => null,
             _ => throw const FormatException('Unknown sample selection'),

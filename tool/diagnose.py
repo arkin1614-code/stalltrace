@@ -228,6 +228,137 @@ def application_frames(java, native, java_package, dart_files):
     return {"java": java_frame, "dart": None}
 
 
+def live_stack(sample, java, symbols):
+    header = header_of(sample)
+    mono = header[0] if header else None
+    return dict(
+        captureMonoNs=mono,
+        javaDelayMs=(java["monoNs"] - mono) / 1e6
+        if java and mono is not None
+        else None,
+        javaEndDelayMs=(java["endMonoNs"] - mono) / 1e6
+        if java and mono is not None and "endMonoNs" in java
+        else None,
+        javaFrames=list(java["frames"]) if java else [],
+        nativeStack=symbols.decode(sample["native"].splitlines()[1:])
+        if header and sample.get("native")
+        else [],
+    )
+
+
+def neighbors(candidates, selected, wall):
+    """The same bracketing native acquisitions as the catalog, restricted to one process."""
+    by_wall = {}
+    for sample, java in candidates:
+        if (
+            sample.get("pid") != selected["pid"]
+            or sample.get("process") != selected["process"]
+        ):
+            continue
+        header = header_of(sample)
+        if not header:
+            continue
+        at = (
+            sample["sampleWallMs"]
+            - (sample["sampleEndMonoNs"] - header[0]) // 1_000_000
+        )
+        delta = at - wall
+        if abs(delta) <= 2500:
+            by_wall.setdefault(delta, []).append((sample, java))
+    before = max((d for d in by_wall if d <= 0), default=None)
+    after = min((d for d in by_wall if d >= 0), default=None)
+    for delta in sorted({d for d in (before, after) if d is not None}):
+        if len(by_wall[delta]) == 1:
+            yield delta, *by_wall[delta][0]
+
+
+def source_position(capture, language):
+    frame = capture["applicationFrames"][language] if capture else None
+    if not frame:
+        return None
+    if language == "dart":
+        # Multiple packages can have the same lib/*.dart suffix and function name.
+        # Compare the full DWARF filename inside the build-ID-checked libapp.so.
+        for native in capture["nativeStack"]:
+            if (
+                native.get("module") != "libapp.so"
+                or native["function"] != frame["function"]
+            ):
+                continue
+            source = re.fullmatch(r"(.+?):(\d+)(?::\d+)?", native["location"])
+            if (
+                source
+                and int(source[2]) == frame["line"]
+                and (
+                    source[1] == frame["file"]
+                    or source[1].endswith("/" + frame["file"])
+                )
+            ):
+                return {**frame, "dwarfFile": source[1]}
+        return None
+    # Retrace can print alternatives. The first one is insufficient to name a unique source line.
+    frames = capture.get("mainJava", capture.get("javaFrames", []))
+    if any("<OR>" in f for f in frames):
+        return None
+    site = re.fullmatch(r"([^()]+)\(([^():]+):([1-9][0-9]*)\)", frame)
+    if site and "." in site[2] and not site[2].startswith("r8-map-id-"):
+        return {"function": site[1], "file": site[2], "line": int(site[3])}
+    return None
+
+
+def line_evidence(system, live, adjacent, language):
+    at_dump = source_position(system, language)
+    selected = source_position(live, language)
+    if at_dump and selected:
+        relation = "sameLine" if at_dump == selected else "differentLine"
+    elif at_dump:
+        relation = "systemOnly"
+    else:
+        relation = "unconfirmed" if selected else "unavailable"
+    observations = []
+    for delta, stack in adjacent:
+        position = source_position(stack, language)
+        if position is not None and relation == "unavailable":
+            relation = "unconfirmed"
+        # Java is acquired separately and may land on the opposite side of a transition.
+        delay = stack["javaDelayMs"] if language == "java" else 0
+        end_delay = stack["javaEndDelayMs"] if language == "java" else 0
+        observations.append(
+            dict(
+                captureMonoNs=stack["captureMonoNs"],
+                nativeDeltaMs=delta,
+                observationDeltaMs=round(delta + delay, 3)
+                if delay is not None
+                else None,
+                observationEndDeltaMs=round(delta + end_delay, 3)
+                if end_delay is not None
+                else None,
+                position=position,
+            )
+        )
+    matching = [
+        obs
+        for obs in observations
+        if at_dump is not None
+        and obs["position"] == at_dump
+        and obs["observationDeltaMs"] is not None
+        and obs["observationEndDeltaMs"] is not None
+        and -2500 <= obs["observationDeltaMs"] <= obs["observationEndDeltaMs"] <= 2500
+    ]
+    corroborating = min(
+        matching, key=lambda obs: abs(obs["observationDeltaMs"]), default=None
+    )
+    return dict(
+        atDump=at_dump,
+        selected=selected,
+        relation=relation,
+        corroboratingCaptureMonoNs=corroborating["captureMonoNs"]
+        if corroborating
+        else None,
+        neighbors=observations,
+    )
+
+
 def diagnose(
     raw,
     report_id,
@@ -264,21 +395,12 @@ def diagnose(
     else:
         # The middle available capture is an observation while the probe was pending.
         sample, java = candidates[len(candidates) // 2]
-    header = header_of(sample)
-    mono = header[0] if header else None
-    live = dict(
-        captureMonoNs=mono,
-        sampleBasis=report.get("sampleSelection")
+    live = live_stack(sample, java, symbols)
+    live["sampleBasis"] = (
+        report.get("sampleSelection")
         if association == "matched"
-        else "middleObservedSample",
-        javaDelayMs=(java["monoNs"] - mono) / 1e6
-        if java and mono is not None
-        else None,
-        javaFrames=list(java["frames"]) if java else [],
-        nativeStack=[],
+        else "middleObservedSample"
     )
-    if header and sample.get("native"):
-        live["nativeStack"] = symbols.decode(sample["native"].splitlines()[1:])
     system = None
     if association == "matched":
         pid = sample["pid"]
@@ -305,16 +427,25 @@ def diagnose(
             raise ValueError(
                 "primary system dump does not match the catalog and live capture"
             )
-    groups = [live["javaFrames"]]
+    adjacent = []
+    scopes = java_package or dart_files
+    if system and scopes:
+        for delta, other, other_java in neighbors(candidates, sample, system["wallMs"]):
+            stack = live if other is sample else live_stack(other, other_java, symbols)
+            adjacent.append((delta, stack))
+    other_stacks = [stack for _, stack in adjacent if stack is not live]
+    groups = [stack["javaFrames"] for stack in [live, *other_stacks]]
     if system:
         groups.append(system["mainJava"])
         if system["owner"]:
             groups.append(system["owner"]["javaFrames"])
     status = retrace(groups, mapping, command) if mapping else "notSupplied"
-    if java_package or dart_files:
-        live["applicationFrames"] = application_frames(
-            live["javaFrames"], live["nativeStack"], java_package, dart_files
-        )
+    evidence = {}
+    if scopes:
+        for stack in [live, *other_stacks]:
+            stack["applicationFrames"] = application_frames(
+                stack["javaFrames"], stack["nativeStack"], java_package, dart_files
+            )
         if system:
             system["applicationFrames"] = application_frames(
                 system["mainJava"], system["nativeStack"], java_package, dart_files
@@ -323,6 +454,9 @@ def diagnose(
                 system["owner"]["applicationFrames"] = application_frames(
                     system["owner"]["javaFrames"], [], java_package, ()
                 )
+        for language, requested in (("java", java_package), ("dart", dart_files)):
+            if requested:
+                evidence[language] = line_evidence(system, live, adjacent, language)
     live["mechanism"] = classify(live["javaFrames"], live["nativeStack"], False)
     if system:
         system["mechanism"] = classify(
@@ -336,6 +470,7 @@ def diagnose(
         mechanism=system["mechanism"] if use_system else live["mechanism"],
         mechanismSource="primarySystemDump" if use_system else "liveObservation",
         r8Mapping=status,
+        sourceLines=evidence,
         live=live,
         system=system,
     )

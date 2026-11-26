@@ -1,5 +1,7 @@
-## Unreleased
+## 0.1.0-dev.6
 
+* Select adjacent live samples by a positioned Java call site and its call context. Use deeper return-address agreement when two native samples share the same leaf and initial call sites.
+* Report source-line agreement and disagreements between the primary Android dump, the selected sample and its neighbors. Add within-function Java and Dart/FFI line transitions to the release workload.
 * Add offline diagnosis of the selected live stack and primary input-ANR dump, including R8 retracing, application source frames and explicit ART monitor ownership.
 * Add paired SQLite, Java monitor and Dart JSON workloads with a device runner and evidence verifier.
 

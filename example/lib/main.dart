@@ -60,7 +60,7 @@ class _LabState extends State<Lab> {
     });
     try {
       if (const bool.fromEnvironment('STALLTRACE_BUSINESS_LAB') &&
-          businessLabels.contains(name)) {
+          (businessLabels.contains(name) || lineSwitchLabels.contains(name))) {
         await channel.invokeMethod<void>(
           'mark',
           'begin $name dartTid=${_tid()}',
@@ -187,7 +187,7 @@ class _LabState extends State<Lab> {
               ),
             for (final name
                 in const bool.fromEnvironment('STALLTRACE_BUSINESS_LAB')
-                    ? [...businessLabels, 'Export']
+                    ? [...businessLabels, ...lineSwitchLabels, 'Export']
                     : [
                         'Dart CPU',
                         'Native FFI',

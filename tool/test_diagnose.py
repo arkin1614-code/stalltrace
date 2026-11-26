@@ -9,6 +9,8 @@ from diagnose import (
     capture_candidates,
     classify,
     diagnose,
+    line_evidence,
+    neighbors,
     primary_dump,
     retrace,
 )
@@ -121,6 +123,93 @@ class DiagnoseTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "mismatch"):
                 retrace([["b.f(r8-map-id-cccccc:3)"]], mapping, ["retrace"])
             run.assert_not_called()
+
+    def test_line_evidence_uses_the_dump_and_can_pick_the_other_dart_neighbor(self):
+        def stack(mono, line):
+            frame = (
+                {"function": "load", "file": "lib/cache.dart", "line": line}
+                if line
+                else None
+            )
+            return {
+                "captureMonoNs": mono,
+                "applicationFrames": {"dart": frame},
+                "nativeStack": [
+                    {
+                        "module": "libapp.so",
+                        "function": "load",
+                        "location": f"/pkg/lib/cache.dart:{line}",
+                    }
+                ],
+            }
+
+        earlier, later = stack(31, 27), stack(42, 24)
+        adjacent = [(-1600, earlier), (380, later)]
+        result = line_evidence(stack(0, 27), later, adjacent, "dart")
+        self.assertEqual(result["atDump"]["line"], 27)
+        self.assertEqual(result["selected"]["line"], 24)
+        self.assertEqual(result["relation"], "differentLine")
+        self.assertEqual(result["corroboratingCaptureMonoNs"], 31)
+        missing = line_evidence(
+            stack(0, None), later, [(100, later), (500, later)], "dart"
+        )
+        self.assertEqual(missing["relation"], "unconfirmed")
+        self.assertIsNone(missing["atDump"])
+        self.assertIsNone(missing["corroboratingCaptureMonoNs"])
+
+        other_package = stack(51, 27)
+        other_package["nativeStack"][0]["location"] = "/other/lib/cache.dart:27"
+        result = line_evidence(earlier, other_package, [(100, other_package)], "dart")
+        self.assertEqual(result["relation"], "differentLine")
+        self.assertIsNone(result["corroboratingCaptureMonoNs"])
+
+    def test_ambiguous_or_unpositioned_java_cannot_confirm_a_line(self):
+        method = "app.Data.save(Data.java:12)"
+        live = {
+            "captureMonoNs": 15,
+            "applicationFrames": {"java": method},
+            "javaFrames": [method],
+            "javaDelayMs": 10,
+            "javaEndDelayMs": 25,
+        }
+        system = {"applicationFrames": {"java": method}, "mainJava": [method]}
+        self.assertIsNone(
+            line_evidence(system, live, [(2490, live)], "java")[
+                "corroboratingCaptureMonoNs"
+            ]
+        )
+        system["mainJava"].append("<OR> app.Data.other(Other.java:3)")
+        self.assertIsNone(line_evidence(system, live, [], "java")["atDump"])
+        for frame in (
+            "app.Data.save(Unknown Source)",
+            "app.Data.save(SourceFile:1)",
+            "app.Data.save(r8-map-id-ff0123ab:1)",
+        ):
+            system = {"applicationFrames": {"java": frame}, "mainJava": [frame]}
+            self.assertIsNone(line_evidence(system, live, [], "java")["atDump"])
+
+    def test_neighbors_reject_other_process_duplicate_stamp_and_outside_window(self):
+        def sample(wall, process="app"):
+            return {
+                "process": process,
+                "pid": 7,
+                "native": "123 7 0",
+                "sampleStartMonoNs": 122,
+                "sampleEndMonoNs": 124,
+                "sampleWallMs": wall,
+            }
+
+        selected = sample(3100)
+        items = [
+            sample(100),
+            sample(2300),
+            sample(2800, "other"),
+            selected,
+            sample(3100),
+            sample(6000),
+        ]
+        actual = list(neighbors([(r, None) for r in items], selected, 3000))
+        self.assertEqual([d for d, _, _ in actual], [-700])
 
     def test_java_must_be_adjacent_pending_and_after_the_native_acquisition(self):
         native = dict(

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
 
@@ -13,7 +14,6 @@ const businessLabels = [
   'JSON UI',
   'JSON isolate',
 ];
-
 // Synthetic catalog pages have a fixed schema, size and checksum on both paths.
 final String _stockPage = jsonEncode([
   for (var i = 0; i < 256; i++)
@@ -48,6 +48,15 @@ int _sizeCache() {
   return (pages * 20000 / timer.elapsedMilliseconds).round().clamp(1, 2000000);
 }
 
+const lineSwitchLabels = ['Line switch', 'Dart line switch'];
+
+@pragma('vm:never-inline')
+void waitAtTwoDartLines(void Function(int) wait, void Function() mark) {
+  wait(5550);
+  mark();
+  wait(9000);
+}
+
 Future<String> runBusinessScenario(String name, MethodChannel channel) async {
   final countFile = File(
     '${Directory.systemTemp.path}/stalltrace-scenario-pages',
@@ -56,6 +65,23 @@ Future<String> runBusinessScenario(String name, MethodChannel channel) async {
     final count = await Isolate.run(_sizeCache);
     await countFile.writeAsString('$count', flush: true);
     return 'pages=$count';
+  }
+  if (name == 'Dart line switch') {
+    final library = DynamicLibrary.open('libstalltrace_fixture.so');
+    final wait = library
+        .lookupFunction<Void Function(Int32), void Function(int)>(
+          'fixture_native_entry',
+        );
+    final mark = library.lookupFunction<Void Function(), void Function()>(
+      'fixture_phase_mark',
+    );
+    await channel.invokeMethod<void>('mark', 'work $name');
+    waitAtTwoDartLines(wait, mark);
+    return 'complete';
+  }
+  if (name == 'Line switch') {
+    await channel.invokeMethod<void>('lineSwitch');
+    return 'complete';
   }
   if (name.startsWith('JSON ')) {
     final pages = int.parse(await countFile.readAsString());

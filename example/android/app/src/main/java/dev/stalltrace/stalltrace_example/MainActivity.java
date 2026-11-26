@@ -33,6 +33,11 @@ public class MainActivity extends FlutterActivity {
                 if (call.method.equals("mark")) {
                     Log.i("AnrLab", String.valueOf(call.arguments));
                     result.success(null);
+                } else if (call.method.equals("lineSwitch")) {
+                    new Handler(Looper.getMainLooper()).post(() -> {
+                        inventory.waitAtTwoLines();
+                        result.success(null);
+                    });
                 } else if (call.method.equals("inventoryEdit")) {
                     inventory.contend(Boolean.TRUE.equals(call.argument("database")),
                         Boolean.TRUE.equals(call.argument("onMain")), result);
